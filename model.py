@@ -101,9 +101,12 @@ class Block(nn.Module):
         self.mlp = MLP(config)
 
     def forward(self, x):
+        activations = []
         x = x + self.attn(self.ln_1(x))
+        activations.append(x)
         x = x + self.mlp(self.ln_2(x))
-        return x
+        activations.append(x)
+        return x, activations
 
 @dataclass
 class GPTConfig:
@@ -173,12 +176,15 @@ class GPT(nn.Module):
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
         pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
 
+        activations = []
+
         # forward the GPT model itself
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
-            x = block(x)
+            x, block_activations = block(x)
+            activations.extend(block_activations)
         x = self.transformer.ln_f(x)
 
         if targets is not None:
@@ -190,7 +196,7 @@ class GPT(nn.Module):
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
             loss = None
 
-        return logits, loss
+        return logits, loss, activations
 
     def crop_block_size(self, block_size):
         # model surgery to decrease the block size if necessary
