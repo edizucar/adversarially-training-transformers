@@ -76,6 +76,8 @@ else:
     device = 'cpu' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
     compile = False # use PyTorch 2.0 to compile the model to be faster
 dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
+lambda_adversarial = 0.01
+probe_learning_rate = 1e-4
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open('configurator.py').read()) # overrides from command line or config file
@@ -247,6 +249,25 @@ if wandb_log and master_process:
     import wandb
     wandb.init(project=wandb_project, name=wandb_run_name, config=config)
 
+# linear probe setup stuff
+class LinearProbe(torch.nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super(LinearProbe, self).__init__()
+        self.linear = torch.nn.Linear(input_dim, output_dim)
+
+    def forward(self, x):
+        return self.linear(x)
+
+probes = [LinearProbe(n_embd, n_embd).to(device) for _ in range(n_layer * 2)]
+probe_optimizers = [torch.optim.Adam(probe.parameters(), lr=probe_learning_rate) for probe in probes]
+
+def compute_probe_loss(probe, activation):
+    probe_input = activation[:, 1:, :].contiguous().view(-1, n_embd)
+    probe_target = activation[:, :-1, :].contiguous().view(-1, n_embd)
+    probe_output = probe(probe_input)
+    probe_loss = torch.nn.functional.mse_loss(probe_output, probe_input)
+    return probe_loss
+
 # training loop
 X, Y = get_batch('train') # fetch the very first batch
 t0 = time.time()
@@ -298,21 +319,39 @@ while True:
             # looking at the source of that context manager, it just toggles this variable
             model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
         with ctx:
-            logits, loss, activations = model(X, Y)
-            loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
+            logits, transformer_loss, activations = model(X, Y)
+            transformer_loss = transformer_loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
+
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
         X, Y = get_batch('train')
+
+        accumulated_adversarial_loss = 0
+        for activation, probe in zip(activations, probes):
+            detached_activation = activation.detach()
+            probe_loss = compute_probe_loss(probe, detached_activation)
+            scaler.scale(probe_loss).backward()
+
+            # Now calculate adversarial loss using non-detached activations
+            adversarial_probe_loss = -compute_probe_loss(probe, activation)
+            accumulated_adversarial_loss += adversarial_probe_loss
+        
+        total_loss = transformer_loss + lambda_adversarial * accumulated_adversarial_loss
+
         # backward pass, with gradient scaling if training in fp16
-        scaler.scale(loss).backward()
+        scaler.scale(total_loss).backward()
     # clip the gradient
     if grad_clip != 0.0:
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
     # step the optimizer and scaler if training in fp16
     scaler.step(optimizer)
+    for probe_optimizer in probe_optimizers:
+        scaler.step(probe_optimizer)
     scaler.update()
     # flush the gradients as soon as we can, no need for this memory anymore
     optimizer.zero_grad(set_to_none=True)
+    for probe_optimizer in probe_optimizers:
+        probe_optimizer.zero_grad(set_to_none=True)
 
     # timing and logging
     t1 = time.time()
@@ -321,7 +360,7 @@ while True:
     if iter_num % log_interval == 0 and master_process:
         # get loss as float. note: this is a CPU-GPU sync point
         # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
-        lossf = loss.item() * gradient_accumulation_steps
+        lossf = transformer_loss.item() * gradient_accumulation_steps
         if local_iter_num >= 5: # let the training loop settle a bit
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
