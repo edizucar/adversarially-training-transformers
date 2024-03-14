@@ -265,7 +265,7 @@ def compute_probe_loss(probe, activation):
     probe_input = activation[:, 1:, :].contiguous().view(-1, n_embd)
     probe_target = activation[:, :-1, :].contiguous().view(-1, n_embd)
     probe_output = probe(probe_input)
-    probe_loss = torch.nn.functional.mse_loss(probe_output, probe_input)
+    probe_loss = torch.nn.functional.mse_loss(probe_output, probe_target)
     return probe_loss
 
 # training loop
