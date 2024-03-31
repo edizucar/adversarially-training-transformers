@@ -21,6 +21,8 @@ import time
 import math
 import pickle
 from contextlib import nullcontext
+import tiktoken
+
 
 import numpy as np
 import torch
@@ -76,8 +78,8 @@ else:
     device = 'cpu' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
     compile = False # use PyTorch 2.0 to compile the model to be faster
 dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
-lambda_adversarial = 0.01
-probe_learning_rate = 1e-4
+lambda_adversarial = 0.001
+probe_learning_rate = 1e-3
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open('configurator.py').read()) # overrides from command line or config file
@@ -121,16 +123,36 @@ ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=
 data_dir = os.path.join('data', dataset)
 train_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
 val_data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
+
+def detokenize(x):
+    enc = tiktoken.get_encoding("gpt2")
+    results = []
+    for i in range(x.shape[0]):
+        result = [enc.decode([token]) for token in x[i]]
+        results.append(result)
+
+    return results
+
 def get_batch(split):
+    print('----------------')
     data = train_data if split == 'train' else val_data
+    print(data.shape)
+    print(data.dtype)
     ix = torch.randint(len(data) - block_size, (batch_size,))
+    print(ix)
     x = torch.stack([torch.from_numpy((data[i:i+block_size]).astype(np.int64)) for i in ix])
+    result = detokenize(x)
     y = torch.stack([torch.from_numpy((data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
     if device_type == 'cuda':
         # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
         x, y = x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
     else:
         x, y = x.to(device), y.to(device)
+
+    print(x.shape)
+    print(y.shape)
+    print('ooooooooooo')
+
     return x, y
 
 # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
@@ -261,11 +283,27 @@ class LinearProbe(torch.nn.Module):
 probes = [LinearProbe(n_embd, n_embd).to(device) for _ in range(n_layer * 2)]
 probe_optimizers = [torch.optim.Adam(probe.parameters(), lr=probe_learning_rate) for probe in probes]
 
+
+for probe in probes:
+    # Start with an identity matrix
+    identity_matrix = torch.eye(n_embd)
+    
+    # Add a small random noise to each weight, e.g., from a Normal distribution with mean 0 and std dev 0.01
+    noise = torch.randn(n_embd, n_embd) * 0.005
+    
+    # Update weights to be a slightly perturbed identity matrix
+    probe.linear.weight.data = (identity_matrix + noise).to(device)
+    
+    # Initialize biases to zero
+    probe.linear.bias.data.zero_()
+
 def compute_probe_loss(probe, activation):
     probe_input = activation[:, 1:, :].contiguous().view(-1, n_embd)
     probe_target = activation[:, :-1, :].contiguous().view(-1, n_embd)
     probe_output = probe(probe_input)
     probe_loss = torch.nn.functional.mse_loss(probe_output, probe_target)
+    probe_loss /= probe_target.norm()
+    # probe_loss = torch.nn.functional.mse_loss(probe_output, probe_input)
     return probe_loss
 
 # training loop
@@ -282,30 +320,30 @@ while True:
         param_group['lr'] = lr
 
     # evaluate the loss on train/val sets and write checkpoints
-    if iter_num % eval_interval == 0 and master_process:
-        losses = estimate_loss()
-        print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
-        if wandb_log:
-            wandb.log({
-                "iter": iter_num,
-                "train/loss": losses['train'],
-                "val/loss": losses['val'],
-                "lr": lr,
-                "mfu": running_mfu*100, # convert to percentage
-            })
-        if losses['val'] < best_val_loss or always_save_checkpoint:
-            best_val_loss = losses['val']
-            if iter_num > 0:
-                checkpoint = {
-                    'model': raw_model.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'model_args': model_args,
-                    'iter_num': iter_num,
-                    'best_val_loss': best_val_loss,
-                    'config': config,
-                }
-                print(f"saving checkpoint to {out_dir}")
-                torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
+    # if iter_num % eval_interval == 0 and master_process:
+    #     losses = estimate_loss()
+    #     print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+    #     if wandb_log:
+    #         wandb.log({
+    #             "iter": iter_num,
+    #             "train/loss": losses['train'],
+    #             "val/loss": losses['val'],
+    #             "lr": lr,
+    #             "mfu": running_mfu*100, # convert to percentage
+    #         })
+    #     if losses['val'] < best_val_loss or always_save_checkpoint:
+    #         best_val_loss = losses['val']
+    #         if iter_num > 0:
+    #             checkpoint = {
+    #                 'model': raw_model.state_dict(),
+    #                 'optimizer': optimizer.state_dict(),
+    #                 'model_args': model_args,
+    #                 'iter_num': iter_num,
+    #                 'best_val_loss': best_val_loss,
+    #                 'config': config,
+    #             }
+    #             print(f"saving checkpoint to {out_dir}")
+    #             torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
     if iter_num == 0 and eval_only:
         break
 
@@ -324,6 +362,7 @@ while True:
 
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
         X, Y = get_batch('train')
+        # print(X)
 
         accumulated_adversarial_loss = 0
         for activation, probe in zip(activations, probes):
@@ -346,7 +385,8 @@ while True:
     # step the optimizer and scaler if training in fp16
     scaler.step(optimizer)
     for probe_optimizer in probe_optimizers:
-        scaler.step(probe_optimizer)
+        if iter_num>300:
+            scaler.step(probe_optimizer)
     scaler.update()
     # flush the gradients as soon as we can, no need for this memory anymore
     optimizer.zero_grad(set_to_none=True)
@@ -364,7 +404,7 @@ while True:
         if local_iter_num >= 5: # let the training loop settle a bit
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
-        print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
+        print(f"iter {iter_num}: loss {lossf:.4f}, probe loss {-accumulated_adversarial_loss:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
     iter_num += 1
     local_iter_num += 1
 
