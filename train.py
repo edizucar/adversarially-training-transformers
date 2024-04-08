@@ -133,15 +133,48 @@ def detokenize(x):
 
     return results
 
+def compute_probe_targets(x):
+    all_targets = []
+    for batch_item in x:
+        targets = []
+        inside_quote = False
+        for i, token in enumerate(batch_item):
+            if i == 0 and token[0] == '"':
+                # we don't know if it is a start/end quote so just ignore it
+                continue
+            if '"' in token:
+                if token[0] == '"':
+                    # quote is at beginning of token so check previous token
+                    is_start_quote = batch_item[i-1][-1] in [' ', '\n', '\t']
+                else:
+                    quote_index = token.index('"')
+                    is_start_quote = token[quote_index-1] in [' ', '\n', '\t']
+                if is_start_quote:
+                    targets.extend([0] * (i - len(targets)))
+                else:
+                    targets.extend([1] * ((i+1) - len(targets)))
+                inside_quote = is_start_quote
+        # Handle trailing tokens after the last quote
+        targets.extend([int(inside_quote)] * (len(batch_item) - len(targets)))
+        # print('iiiiiii')
+        # print(batch_item)
+        # print(targets)
+        all_targets.append(targets)
+    # exit()
+    return all_targets
+
 def get_batch(split):
-    print('----------------')
+    # print('----------------')
     data = train_data if split == 'train' else val_data
-    print(data.shape)
-    print(data.dtype)
+    # print(data.shape)
+    # print(data.dtype)
     ix = torch.randint(len(data) - block_size, (batch_size,))
-    print(ix)
+    # print(ix)
     x = torch.stack([torch.from_numpy((data[i:i+block_size]).astype(np.int64)) for i in ix])
-    result = detokenize(x)
+    x_tokens = detokenize(x)
+    probe_targets = torch.tensor(compute_probe_targets(x_tokens)).float()
+    # print(x_tokens)
+    # exit()
     y = torch.stack([torch.from_numpy((data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
     if device_type == 'cuda':
         # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
@@ -149,11 +182,7 @@ def get_batch(split):
     else:
         x, y = x.to(device), y.to(device)
 
-    print(x.shape)
-    print(y.shape)
-    print('ooooooooooo')
-
-    return x, y
+    return x, y, probe_targets
 
 # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
 iter_num = 0
@@ -244,7 +273,7 @@ def estimate_loss():
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
-            X, Y = get_batch(split)
+            X, Y, _ = get_batch(split)
             with ctx:
                 logits, loss, _ = model(X, Y)
             losses[k] = loss.item()
@@ -280,24 +309,24 @@ class LinearProbe(torch.nn.Module):
     def forward(self, x):
         return self.linear(x)
 
-probes = [LinearProbe(n_embd, n_embd).to(device) for _ in range(n_layer * 2)]
+probes = [LinearProbe(n_embd, 1).to(device) for _ in range(n_layer * 2)]
 probe_optimizers = [torch.optim.Adam(probe.parameters(), lr=probe_learning_rate) for probe in probes]
 
 
-for probe in probes:
-    # Start with an identity matrix
-    identity_matrix = torch.eye(n_embd)
+# for probe in probes:
+#     # Start with an identity matrix
+#     identity_matrix = torch.eye(n_embd)
     
-    # Add a small random noise to each weight, e.g., from a Normal distribution with mean 0 and std dev 0.01
-    noise = torch.randn(n_embd, n_embd) * 0.005
+#     # Add a small random noise to each weight, e.g., from a Normal distribution with mean 0 and std dev 0.01
+#     noise = torch.randn(n_embd, n_embd) * 0.005
     
-    # Update weights to be a slightly perturbed identity matrix
-    probe.linear.weight.data = (identity_matrix + noise).to(device)
+#     # Update weights to be a slightly perturbed identity matrix
+#     probe.linear.weight.data = (identity_matrix + noise).to(device)
     
-    # Initialize biases to zero
-    probe.linear.bias.data.zero_()
+#     # Initialize biases to zero
+#     probe.linear.bias.data.zero_()
 
-def compute_probe_loss(probe, activation):
+def compute_prev_token_probe_loss(probe, activation):
     probe_input = activation[:, 1:, :].contiguous().view(-1, n_embd)
     probe_target = activation[:, :-1, :].contiguous().view(-1, n_embd)
     probe_output = probe(probe_input)
@@ -306,8 +335,21 @@ def compute_probe_loss(probe, activation):
     # probe_loss = torch.nn.functional.mse_loss(probe_output, probe_input)
     return probe_loss
 
+def compute_in_quote_probe_loss(probe, activation, target):
+    # print('ssssssssss')
+    # print(activation.shape)
+    # print(target.shape)
+    # print(target.dtype)
+    logits = probe(activation)
+    # print(logits.shape)
+    logits = logits.squeeze(-1)
+    # print(logits.shape)
+    loss_fn = torch.nn.BCEWithLogitsLoss()
+    loss = loss_fn(logits, target)
+    return loss
+
 # training loop
-X, Y = get_batch('train') # fetch the very first batch
+X, Y, probe_targets = get_batch('train') # fetch the very first batch
 t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
@@ -361,17 +403,17 @@ while True:
             transformer_loss = transformer_loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
 
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
-        X, Y = get_batch('train')
+        X, Y, probe_targets = get_batch('train')
         # print(X)
 
         accumulated_adversarial_loss = 0
         for activation, probe in zip(activations, probes):
             detached_activation = activation.detach()
-            probe_loss = compute_probe_loss(probe, detached_activation)
+            probe_loss = compute_in_quote_probe_loss(probe, detached_activation, probe_targets)
             scaler.scale(probe_loss).backward()
 
             # Now calculate adversarial loss using non-detached activations
-            adversarial_probe_loss = -compute_probe_loss(probe, activation)
+            adversarial_probe_loss = -compute_in_quote_probe_loss(probe, activation, probe_targets)
             accumulated_adversarial_loss += adversarial_probe_loss
         
         total_loss = transformer_loss + lambda_adversarial * accumulated_adversarial_loss
@@ -385,8 +427,7 @@ while True:
     # step the optimizer and scaler if training in fp16
     scaler.step(optimizer)
     for probe_optimizer in probe_optimizers:
-        if iter_num>300:
-            scaler.step(probe_optimizer)
+        scaler.step(probe_optimizer)
     scaler.update()
     # flush the gradients as soon as we can, no need for this memory anymore
     optimizer.zero_grad(set_to_none=True)
