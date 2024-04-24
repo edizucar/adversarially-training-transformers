@@ -7,17 +7,19 @@ from contextlib import nullcontext
 import torch
 import tiktoken
 from model import GPTConfig, GPT
+import time
+from model import LinearProbe, NonLinearProbe
 
 # -----------------------------------------------------------------------------
 init_from = 'resume' # either 'resume' (from an out_dir) or a gpt2 variant (e.g. 'gpt2-xl')
 out_dir = 'out' # ignored if init_from is not 'resume'
 start = "FILE:prompt.txt" # or "<|endoftext|>" or etc. Can also specify a file, use as: "FILE:prompt.txt"
-start = "Jenny was walking in the park"
-num_samples = 10 # number of samples to draw
+start = "Jenny was walking in the park and said"
+num_samples = 1 # number of samples to draw
 max_new_tokens = 500 # number of tokens generated in each sample
 temperature = 0.8 # 1.0 = no change, < 1.0 = less random, > 1.0 = more random, in predictions
 top_k = 200 # retain only the top_k most likely tokens, clamp others to have 0 probability
-seed = 1337
+seed = 1336 # int(time.time()) # 1337
 device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1', etc.
 dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32' or 'bfloat16' or 'float16'
 compile = False # use PyTorch 2.0 to compile the model to be faster
@@ -73,6 +75,8 @@ else:
     enc = tiktoken.get_encoding("gpt2")
     encode = lambda s: enc.encode(s, allowed_special={"<|endoftext|>"})
     decode = lambda l: enc.decode(l)
+    decode_1 = lambda l: [decode([tok]) for tok in l]
+
 
 # encode the beginning of the prompt
 if start.startswith('FILE:'):
@@ -88,5 +92,8 @@ with torch.no_grad():
     with ctx:
         for k in range(num_samples):
             y = model.generate(x, max_new_tokens, temperature=temperature, top_k=top_k)
-            print(decode(y[0].tolist()))
+            print (f"y.shape: {y.shape}")
+            for s,t in zip(decode_1(y[0].tolist()), y[0].tolist()):
+                #print(f"({s},{t})",end='')
+                print(s,end='')
             print('---------------')

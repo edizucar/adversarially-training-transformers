@@ -29,11 +29,13 @@ import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-from model import GPTConfig, GPT, LinearProbe, NonLinearProbe
-from torch import nn
+from model import GPTConfig, GPT
 from torch import Tensor
 from jaxtyping import Float, Int, Bool, Union
 from typing import Dict
+
+
+
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
 # I/O
@@ -45,7 +47,7 @@ eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = True # if True, always save a checkpoint after each eval
 init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
 # wandb logging
-wandb_log = True # disabled by default
+wandb_log = False # disabled by default
 wandb_project = 'owt'
 wandb_run_name = 'gpt2' # 'run' + str(time.time())
 # data
@@ -73,7 +75,6 @@ lr_decay_iters = 600000 # should be ~= max_iters per Chinchilla
 min_lr = 6e-5 # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
 # DDP settings
 backend = 'nccl' # 'nccl', 'gloo', etc.
-ediz = False
 # system
 if torch.cuda.is_available():
     device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
@@ -82,7 +83,6 @@ else:
     device = 'cpu' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
     compile = False # use PyTorch 2.0 to compile the model to be faster
 dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
-
 lambda_adversarial = 0 #0.001
 probe_learning_rate = 1e-3
 # -----------------------------------------------------------------------------
@@ -108,6 +108,7 @@ if ddp:
     gradient_accumulation_steps //= ddp_world_size
 else:
     # if not ddp, we are running on a single gpu, and one process
+    # MARS: We do this... (i.e. not multiprocessing)
     master_process = True
     seed_offset = 0
     ddp_world_size = 1
@@ -131,7 +132,6 @@ val_data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r
 
 def detokenize(x):
     enc = tiktoken.get_encoding("gpt2")
-    # MARS: biggest token 50146
     results = []
     for i in range(x.shape[0]):
         result = [enc.decode([token]) for token in x[i]]
@@ -139,30 +139,19 @@ def detokenize(x):
 
     return results
 
-def compute_probe_targets(token_batches : list[str, "batch_size seq"]):
-    """
-    Takes:
-        - tokens_batches : list[str, "batch_size seq"] - a list of tokens (as strings), length batch_size
-
-    Returns
-        - all_targets : list[str, "batch_size seq"] - a list that has a 1 if the current token position is in a quote, and a 0 otherwise.
-
-    """
-
+def compute_probe_targets(x):
     all_targets = []
-    for tokens in token_batches:
+    for batch_item in x:
         targets = []
         inside_quote = False
-        for i, token in enumerate(tokens):
+        for i, token in enumerate(batch_item):
             if i == 0 and token[0] == '"':
-                # Question: is it a reasonable assumption that a lack a whitespace after a quotation mark implies you are inside a quote?
-
                 # we don't know if it is a start/end quote so just ignore it
                 continue
             if '"' in token:
                 if token[0] == '"':
                     # quote is at beginning of token so check previous token
-                    is_start_quote = tokens[i-1][-1] in [' ', '\n', '\t']
+                    is_start_quote = batch_item[i-1][-1] in [' ', '\n', '\t']
                 else:
                     quote_index = token.index('"')
                     is_start_quote = token[quote_index-1] in [' ', '\n', '\t']
@@ -172,8 +161,12 @@ def compute_probe_targets(token_batches : list[str, "batch_size seq"]):
                     targets.extend([1] * ((i+1) - len(targets)))
                 inside_quote = is_start_quote
         # Handle trailing tokens after the last quote
-        targets.extend([int(inside_quote)] * (len(tokens) - len(targets)))
+        targets.extend([int(inside_quote)] * (len(batch_item) - len(targets)))
+        # print('iiiiiii')
+        # print(batch_item)
+        # print(targets)
         all_targets.append(targets)
+    # exit()
     return all_targets
 
 def get_batch(split, print_stuff=False):
@@ -184,7 +177,7 @@ def get_batch(split, print_stuff=False):
     ix = torch.randint(len(data) - block_size, (batch_size,))
     # print(ix)
     x = torch.stack([torch.from_numpy((data[i:i+block_size]).astype(np.int64)) for i in ix])
-    x_tokens : list[str, "batch_size"] = detokenize(x)
+    x_tokens = detokenize(x)
     probe_targets = torch.tensor(compute_probe_targets(x_tokens)).float()
     if print_stuff:
         print('tokens:')
@@ -215,7 +208,6 @@ if os.path.exists(meta_path):
         meta = pickle.load(f)
     meta_vocab_size = meta['vocab_size']
     print(f"found vocab_size = {meta_vocab_size} (inside {meta_path})")
-
 
 # model init
 model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
@@ -250,21 +242,8 @@ elif init_from == 'resume':
         if k.startswith(unwanted_prefix):
             state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
     model.load_state_dict(state_dict)
-
     iter_num = checkpoint['iter_num']
     best_val_loss = checkpoint['best_val_loss']
-
-    probe_type = NonLinearProbe
-
-    if init_from == "resume" and ediz == False:
-        probe_type = checkpoint['probe_type']
-
-    probes = [probe_type(n_embd, 1).to(device) for _ in range(n_layer * 2)]
-
-    if init_from == "resume" and ediz == False:
-        probes = [probe.load_state_dict(probe_state_dict) for probe,probe_state_dict in zip(probes,checkpoint['probes'])]
-
-    probe_optimizers = [torch.optim.Adam(probe.parameters(), lr=probe_learning_rate) for probe in probes]
 elif init_from.startswith('gpt2'):
     print(f"Initializing from OpenAI GPT-2 weights: {init_from}")
     # initialize from OpenAI GPT-2 weights
@@ -302,35 +281,25 @@ if ddp:
 @torch.no_grad()
 def estimate_loss():
     out = {}
-    log_dict = {}
     model.eval()
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
-        probe_losses = [torch.zeros(eval_iters) for probe in range(n_layer * 2)]
         for k in range(eval_iters):
-            X, Y, probe_targets = get_batch(split) #, split == 'val' and k == 0)
+            X, Y, probe_targets = get_batch(split,split == 'val' and k == 0)
             with ctx:
                 logits, loss, activations = model(X, Y)
-                for index, (activation, probe) in enumerate(zip(activations, probes)):
-                    layer_number = index // 2
-                    # thing = 'pre MLP' if index % 2 == 0 else 'post-MLP'
-                    detached_activation = activation.detach()
-                    # print(f'predictions for layer {layer_number}, {thing}')
-                    probe_loss = compute_in_quote_probe_loss(probe, detached_activation, probe_targets, False)
-                    probe_losses[index][k] = probe_loss.item()
-                    # if wandb_log:
-                    #     log_dict[f"train/{layer_number}.{thing}-loss/probes"] = probe_loss
-                    # if wandb_log:
-                    #     wandb.log(log_dict)
+
+                if split == 'val' and k == 0:
+                    print('---------------------------------')
+                    print()
+                    for activation, probe in zip(activations, probes):
+                        detached_activation = activation.detach()
+                        probe_loss = compute_in_quote_probe_loss(probe, detached_activation, probe_targets)
+
             losses[k] = loss.item()
-        if wandb_log:
-            for index, probe_loss in enumerate(probe_losses):
-                thing = 'pre MLP' if index % 2 == 0 else 'post-MLP'
-                layer_number = index // 2
-                log_dict[f"{split}/probe_{layer_number}.{thing}"] = probe_loss.mean()
         out[split] = losses.mean()
     model.train()
-    return out, log_dict
+    return out
 
 # learning rate decay scheduler (cosine with warmup)
 def get_lr(it):
@@ -350,16 +319,18 @@ def get_lr(it):
 if wandb_log and master_process:
     import wandb
     wandb.init(project=wandb_project, name=wandb_run_name, config=config)
-    # define our custom x axis metric
-    wandb.define_metric("iteration")
-    # set all other train/ metrics to use this step
-    wandb.define_metric("train/*", step_metric="iteration")
-    wandb.define_metric("val/*", step_metric="iteration")
 
+# linear probe setup stuff
+class LinearProbe(torch.nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super(LinearProbe, self).__init__()
+        self.linear = torch.nn.Linear(input_dim, output_dim)
 
+    def forward(self, x):
+        return self.linear(x)
 
-
-
+probes = [LinearProbe(n_embd, 1).to(device) for _ in range(n_layer * 2)]
+probe_optimizers = [torch.optim.Adam(probe.parameters(), lr=probe_learning_rate) for probe in probes]
 
 
 # for probe in probes:
@@ -385,12 +356,15 @@ def compute_prev_token_probe_loss(probe, activation):
     return probe_loss
 
 def compute_in_quote_probe_loss(probe, activation, target, print_stuff=False):
+    # print('ssssssssss')
+    # print(activation.shape)
+    # print(target.shape)
+    # print(target.dtype)
     logits = probe(activation)
     # print(logits.shape)
     logits = logits.squeeze(-1)
     if print_stuff:
-        print('=============')
-        print(torch.sigmoid(logits[0]))
+        print(logits.shape)
     loss_fn = torch.nn.BCEWithLogitsLoss()
     loss = loss_fn(logits, target)
     return loss
@@ -410,16 +384,15 @@ while True:
 
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
-        losses, probe_loss_dict = estimate_loss()
+        losses = estimate_loss()
         print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
         if wandb_log:
             wandb.log({
-                "iteration": iter_num,
-                "train/model_loss": losses['train'],
-                "val/model_loss": losses['val'],
+                "iter": iter_num,
+                "train/loss": losses['train'],
+                "val/loss": losses['val'],
                 "lr": lr,
                 "mfu": running_mfu*100, # convert to percentage
-                **probe_loss_dict
             })
         if losses['val'] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses['val']
@@ -431,8 +404,6 @@ while True:
                     'iter_num': iter_num,
                     'best_val_loss': best_val_loss,
                     'config': config,
-                    'probes':[probe.state_dict() for probe in probes],
-                    'probe_type': probe_type
                 }
                 print(f"saving checkpoint to {out_dir}")
                 torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))

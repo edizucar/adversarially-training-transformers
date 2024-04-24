@@ -5,7 +5,7 @@ import os
 from tqdm import tqdm
 import numpy as np
 import tiktoken
-from datasets import load_dataset # huggingface datasets
+from datasets import load_dataset, Dataset, Features, Value # huggingface datasets
 
 # number of workers in .map() call
 # good number to use is ~order number of cpu cores // 2
@@ -16,13 +16,33 @@ num_proc = 8
 # it is better than 1 usually though
 num_proc_load_dataset = num_proc
 
+
 if __name__ == '__main__':
-    # takes 54GB in huggingface .cache dir, about 8M documents (8,013,769)
-    dataset = load_dataset("roneneldan/TinyStories", num_proc=num_proc_load_dataset) # Changed this to accommodate for storage space limitations!
+    import pickle
+
+    print("entered script")
+
+    with open('cleaned_data.pkl', 'rb') as file:
+        print("loading file")
+        data_strings = pickle.load(file)
+        print("finished loading file")
+
+
+    def my_gen():
+        for d in data_strings:
+            yield {"text":d}
+
+    print("load data into dataset")
+    dataset = Dataset.from_generator(my_gen)
+
 
     # owt by default only contains the 'train' split, so create a test split
-    split_dataset = dataset["train"].train_test_split(test_size=0.0005, seed=2357, shuffle=True)
+    split_dataset = dataset.train_test_split(test_size=0.0005, seed=2357, shuffle=True)
+
     split_dataset['val'] = split_dataset.pop('test') # rename the test split to val
+
+
+    print(split_dataset)
 
     # this results in:
     # >>> split_dataset

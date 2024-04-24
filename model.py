@@ -319,7 +319,7 @@ class GPT(nn.Module):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
             # forward the model to get the logits for the index in the sequence
-            logits, _ = self(idx_cond)
+            logits, _, _ = self(idx_cond)
             # pluck the logits at the final step and scale by desired temperature
             logits = logits[:, -1, :] / temperature
             # optionally crop the logits to only the top k options
@@ -334,3 +334,24 @@ class GPT(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1)
 
         return idx
+
+# linear probe setup stuff
+class LinearProbe(torch.nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super(LinearProbe, self).__init__()
+        self.linear = torch.nn.Linear(input_dim, output_dim)
+
+    def forward(self, x):
+        return self.linear(x)
+
+class NonLinearProbe(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super(NonLinearProbe, self).__init__()
+        self.layers = nn.Sequential(
+            nn.Linear(input_dim, 100),
+            nn.ReLU(),
+            nn.Linear(100,output_dim)
+        )
+
+    def forward(self, x):
+        return self.layers(x)
