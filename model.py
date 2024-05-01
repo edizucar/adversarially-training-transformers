@@ -334,24 +334,3 @@ class GPT(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1)
 
         return idx
-
-# linear probe setup stuff
-class LinearProbe(torch.nn.Module):
-    def __init__(self, input_dim, output_dim):
-        super(LinearProbe, self).__init__()
-        self.linear = torch.nn.Linear(input_dim, output_dim)
-
-    def forward(self, x):
-        return self.linear(x)
-
-class NonLinearProbe(nn.Module):
-    def __init__(self, input_dim, output_dim):
-        super(NonLinearProbe, self).__init__()
-        self.layers = nn.Sequential(
-            nn.Linear(input_dim, 100),
-            nn.ReLU(),
-            nn.Linear(100,output_dim)
-        )
-
-    def forward(self, x):
-        return self.layers(x)

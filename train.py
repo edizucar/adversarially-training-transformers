@@ -23,17 +23,18 @@ import pickle
 from contextlib import nullcontext
 import tiktoken
 
-
+ 
 import numpy as np
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-from model import GPTConfig, GPT, LinearProbe, NonLinearProbe
+from model import GPTConfig, GPT
 from torch import nn
 from torch import Tensor
-from jaxtyping import Float, Int, Bool, Union
+from jaxtyping import Float, Int, Bool
 from typing import Dict
+import ProbeIntervention
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
 # I/O
@@ -83,8 +84,6 @@ else:
     compile = False # use PyTorch 2.0 to compile the model to be faster
 dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
 
-lambda_adversarial = 0 #0.001
-probe_learning_rate = 1e-3
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open('configurator.py').read()) # overrides from command line or config file
@@ -129,70 +128,19 @@ data_dir = os.path.join('data', dataset)
 train_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
 val_data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
 
-def detokenize(x):
-    enc = tiktoken.get_encoding("gpt2")
-    # MARS: biggest token 50146
-    results = []
-    for i in range(x.shape[0]):
-        result = [enc.decode([token]) for token in x[i]]
-        results.append(result)
-
-    return results
-
-def compute_probe_targets(token_batches : list[str, "batch_size seq"]):
-    """
-    Takes:
-        - tokens_batches : list[str, "batch_size seq"] - a list of tokens (as strings), length batch_size
-
-    Returns
-        - all_targets : list[str, "batch_size seq"] - a list that has a 1 if the current token position is in a quote, and a 0 otherwise.
-
-    """
-
-    all_targets = []
-    for tokens in token_batches:
-        targets = []
-        inside_quote = False
-        for i, token in enumerate(tokens):
-            if i == 0 and token[0] == '"':
-                # Question: is it a reasonable assumption that a lack a whitespace after a quotation mark implies you are inside a quote?
-
-                # we don't know if it is a start/end quote so just ignore it
-                continue
-            if '"' in token:
-                if token[0] == '"':
-                    # quote is at beginning of token so check previous token
-                    is_start_quote = tokens[i-1][-1] in [' ', '\n', '\t']
-                else:
-                    quote_index = token.index('"')
-                    is_start_quote = token[quote_index-1] in [' ', '\n', '\t']
-                if is_start_quote:
-                    targets.extend([0] * (i - len(targets)))
-                else:
-                    targets.extend([1] * ((i+1) - len(targets)))
-                inside_quote = is_start_quote
-        # Handle trailing tokens after the last quote
-        targets.extend([int(inside_quote)] * (len(tokens) - len(targets)))
-        all_targets.append(targets)
-    return all_targets
-
 def get_batch(split, print_stuff=False):
     # print('----------------')
+    # data = massive 1D array containing token indicies
     data = train_data if split == 'train' else val_data
     # print(data.shape)
     # print(data.dtype)
-    ix = torch.randint(len(data) - block_size, (batch_size,))
-    # print(ix)
-    x = torch.stack([torch.from_numpy((data[i:i+block_size]).astype(np.int64)) for i in ix])
-    x_tokens : list[str, "batch_size"] = detokenize(x)
-    probe_targets = torch.tensor(compute_probe_targets(x_tokens)).float()
-    if print_stuff:
-        print('tokens:')
-        print(x_tokens[0])
-        print('targets:')
-        print(probe_targets[0])
-    # print(x_tokens)
-    # exit()
+
+    # `offsets` gives us a random place in the dataset to grab a batch from
+    offsets = torch.randint(len(data) - block_size, (batch_size,))
+
+    x : Int[Tensor, "batch_size block_size"] = torch.stack([torch.from_numpy((data[offset:offset+block_size]).astype(np.int64)) for offset in offsets])
+    probe_targets = ProbeIntervention.compute_probe_targets_from_training_data(x)
+
     y = torch.stack([torch.from_numpy((data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
     if device_type == 'cuda':
         # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
@@ -254,17 +202,9 @@ elif init_from == 'resume':
     iter_num = checkpoint['iter_num']
     best_val_loss = checkpoint['best_val_loss']
 
-    probe_type = NonLinearProbe
 
-    if init_from == "resume" and ediz == False:
-        probe_type = checkpoint['probe_type']
+    probe_cluster = ProbeIntervention.ProbeCluster.load_from_checkpoint(checkpoint)
 
-    probes = [probe_type(n_embd, 1).to(device) for _ in range(n_layer * 2)]
-
-    if init_from == "resume" and ediz == False:
-        probes = [probe.load_state_dict(probe_state_dict) for probe,probe_state_dict in zip(probes,checkpoint['probes'])]
-
-    probe_optimizers = [torch.optim.Adam(probe.parameters(), lr=probe_learning_rate) for probe in probes]
 elif init_from.startswith('gpt2'):
     print(f"Initializing from OpenAI GPT-2 weights: {init_from}")
     # initialize from OpenAI GPT-2 weights
@@ -306,22 +246,12 @@ def estimate_loss():
     model.eval()
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
-        probe_losses = [torch.zeros(eval_iters) for probe in range(n_layer * 2)]
+        probe_losses = []
         for k in range(eval_iters):
             X, Y, probe_targets = get_batch(split) #, split == 'val' and k == 0)
             with ctx:
                 logits, loss, activations = model(X, Y)
-                for index, (activation, probe) in enumerate(zip(activations, probes)):
-                    layer_number = index // 2
-                    # thing = 'pre MLP' if index % 2 == 0 else 'post-MLP'
-                    detached_activation = activation.detach()
-                    # print(f'predictions for layer {layer_number}, {thing}')
-                    probe_loss = compute_in_quote_probe_loss(probe, detached_activation, probe_targets, False)
-                    probe_losses[index][k] = probe_loss.item()
-                    # if wandb_log:
-                    #     log_dict[f"train/{layer_number}.{thing}-loss/probes"] = probe_loss
-                    # if wandb_log:
-                    #     wandb.log(log_dict)
+            probe_losses.append(probe_cluster.compute_probe_losses(activations, probe_targets))
             losses[k] = loss.item()
         if wandb_log:
             for index, probe_loss in enumerate(probe_losses):
@@ -350,16 +280,12 @@ def get_lr(it):
 if wandb_log and master_process:
     import wandb
     wandb.init(project=wandb_project, name=wandb_run_name, config=config)
+    # TODO: move these over to probe-intervention.py
     # define our custom x axis metric
     wandb.define_metric("iteration")
     # set all other train/ metrics to use this step
     wandb.define_metric("train/*", step_metric="iteration")
     wandb.define_metric("val/*", step_metric="iteration")
-
-
-
-
-
 
 
 # for probe in probes:
@@ -375,25 +301,7 @@ if wandb_log and master_process:
 #     # Initialize biases to zero
 #     probe.linear.bias.data.zero_()
 
-def compute_prev_token_probe_loss(probe, activation):
-    probe_input = activation[:, 1:, :].contiguous().view(-1, n_embd)
-    probe_target = activation[:, :-1, :].contiguous().view(-1, n_embd)
-    probe_output = probe(probe_input)
-    probe_loss = torch.nn.functional.mse_loss(probe_output, probe_target)
-    probe_loss /= probe_target.norm()
-    # probe_loss = torch.nn.functional.mse_loss(probe_output, probe_input)
-    return probe_loss
 
-def compute_in_quote_probe_loss(probe, activation, target, print_stuff=False):
-    logits = probe(activation)
-    # print(logits.shape)
-    logits = logits.squeeze(-1)
-    if print_stuff:
-        print('=============')
-        print(torch.sigmoid(logits[0]))
-    loss_fn = torch.nn.BCEWithLogitsLoss()
-    loss = loss_fn(logits, target)
-    return loss
 
 # training loop
 X, Y, probe_targets = get_batch('train') # fetch the very first batch
@@ -431,9 +339,10 @@ while True:
                     'iter_num': iter_num,
                     'best_val_loss': best_val_loss,
                     'config': config,
-                    'probes':[probe.state_dict() for probe in probes],
-                    'probe_type': probe_type
                 }
+
+                checkpoint |= probe_cluster.state_dict()
+
                 print(f"saving checkpoint to {out_dir}")
                 torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
     if iter_num == 0 and eval_only:
@@ -456,6 +365,7 @@ while True:
         X, Y, probe_targets = get_batch('train')
         # print(X)
 
+        # TODO: make function which returns single value (i.e probe loss) to add to total_loss
         accumulated_adversarial_loss = 0
         for activation, probe in zip(activations, probes):
             detached_activation = activation.detach()
@@ -476,6 +386,7 @@ while True:
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
     # step the optimizer and scaler if training in fp16
     scaler.step(optimizer)
+    # TODO: make this a single call (what is scaler? Does it matter where scaler.update occurs?)
     for probe_optimizer in probe_optimizers:
         scaler.step(probe_optimizer)
     scaler.update()
