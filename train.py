@@ -160,7 +160,7 @@ def get_batch(split):
     offsets = torch.randint(len(data) - block_size, (batch_size,))
 
     x : Int[Tensor, "batch_size block_size"] = torch.stack([torch.from_numpy((data[offset:offset+block_size]).astype(np.int64)) for offset in offsets])
-    probe_targets = ProbeIntervention.compute_probe_targets_from_training_data(x)
+    _, _, probe_targets = ProbeIntervention.in_quotes_feature(x)
 
     y = torch.stack([torch.from_numpy((data[offset+1:offset+1+block_size]).astype(np.int64)) for offset in offsets])
     if device_type == 'cuda':

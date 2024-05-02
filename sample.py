@@ -95,4 +95,4 @@ with torch.no_grad():
             for s,t in zip(decode_1(y[0].tolist()), y[0].tolist()):
                 #print(f"({s},{t})",end='')
                 print(s,end='')
-            print('---------------')
+            print('\n---------------')

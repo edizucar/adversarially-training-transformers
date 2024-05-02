@@ -2,8 +2,9 @@ import torch
 from torch import Tensor, nn
 import wandb
 import tiktoken
-from jaxtyping import Float, Int, Bool
-from typing import Dict, List
+from tiktoken import Encoding as Tokenizer
+from jaxtyping import Float, Int, Bool, jaxtyped
+from typing import Dict, List, NamedTuple, Callable
 import os
 import numpy as np
 from beartype import beartype
@@ -34,6 +35,80 @@ class NonLinearProbe(nn.Module):
     def forward(self, x):
         return self.layers(x)
 
+
+BinaryFeatureExtractorOutput = NamedTuple(
+    "FeatureExtractorOutput",
+    [
+        ("text", list[list[str]]), # batched (hence nested)
+        ("tokens", Int[torch.Tensor, "batch seq_len"]),
+        ("features", Bool[torch.Tensor, "batch seq_len"]),
+    ],
+)
+
+FeatureExtractor = Callable[[Int[Tensor, "batch seq_len"], Tokenizer],BinaryFeatureExtractorOutput]
+
+@jaxtyped(typechecker=beartype)
+def in_quotes_feature(
+        tokens: Int[Tensor, "batch seq_len"],
+        tokenizer: Tokenizer = tiktoken.get_encoding("gpt2"),
+        qmark_in_quote: bool = False
+) -> BinaryFeatureExtractorOutput:
+    batch_size,seq_len = tokens.shape
+    text : List[List[str]] = __detokenize(tokens, tokenizer)
+
+    assert len(text) == batch_size and len(text[0]) == seq_len
+
+    quote_features: list[list[bool]] = []
+
+    for batch in text:
+
+        quote_feature: list[bool] = []
+        inside_quote: bool = False # assume we arent in a quote to start
+        is_qmark: bool = False
+
+        for token in batch:
+            if '"' in token:
+                is_qmark = True
+                inside_quote = not inside_quote
+            else:
+                is_qmark = False
+
+            quote_feature.append(
+                qmark_in_quote # tokens with `"` treated separately 
+                if is_qmark 
+                else inside_quote # otherwise, use the current state
+            )
+
+        quote_features.append(quote_feature)
+
+    return BinaryFeatureExtractorOutput(
+        text=text,
+        tokens=tokens,
+        features=torch.tensor(quote_features, device=tokens.device),
+    )
+
+in_quotes_no_qmark_feature: FeatureExtractor = lambda tokens, tokenizer: in_quotes_feature(tokens, tokenizer, qmark_in_quote=False)
+in_quotes_with_qmark_feature: FeatureExtractor = lambda tokens, tokenizer: in_quotes_feature(tokens, tokenizer, qmark_in_quote=True)
+
+@jaxtyped(typechecker=beartype)
+def display_results_from_tokens(tokens: Int[Tensor, "seq_len"], tokenizer: Tokenizer = tiktoken.get_encoding("gpt2"), feature_extractor: FeatureExtractor = in_quotes_feature) -> None:
+    seq_len = tokens.shape[0]
+    text,_, quote_features_tensor = feature_extractor(tokens.unsqueeze(dim=0), tokenizer)
+    assert len(text) == 1 and len(text[0]) == seq_len
+    print("Input text:")
+    for token, feature in zip(text[0], quote_features_tensor[0]):
+        if feature == 1:
+            # print(f"\033[43m{token}\033[0m", end=" ")
+            # dark blue background
+            print(f"\033[44m'{token}'\033[0m", end=" ")
+        else:
+            print(f"'{token}'", end=" ")
+    print("\n")
+
+@jaxtyped(typechecker=beartype)
+def display_results_from_text(text: str, tokenizer: Tokenizer, feature_extractor: FeatureExtractor) -> None:
+    tokens : Int[Tensor, "seq_len"] = torch.Tensor(tokenizer.encode(text)).type(torch.int)
+    display_results_from_tokens(tokens, tokenizer, feature_extractor)
 
 class ProbeCluster:
     def __init__(self, number_of_probes, probe_type: str, input_dim: int, output_dim:int, lr: float, device:str="cpu"):
@@ -137,7 +212,6 @@ class ProbeCluster:
             probe_optimiser.zero_grad(set_to_none=True)
     
 
-
 def compute_probe_targets_from_training_data(training_data: Int[Tensor, "batch_size block_size"]) -> Int[Tensor, "batch_size block_size"]:
     """
     block_size -> the length of the string which is an element
@@ -147,17 +221,16 @@ def compute_probe_targets_from_training_data(training_data: Int[Tensor, "batch_s
     probe_targets = torch.Tensor(list_probe_targets).float()
     return probe_targets
 
-
-def __detokenize(training_data: Int[Tensor, "batch_size block_size"]) -> List[List[str]]:
+@jaxtyped(typechecker=beartype)
+def __detokenize(training_data: Int[Tensor, "batch_size block_size"], tokenizer=tiktoken.get_encoding("gpt2")) -> List[List[str]]:
     """
     returns list of shape (batch_size, block_size)
     """
-    enc = tiktoken.get_encoding("gpt2")
     # MARS: biggest token 50146
 
     results = []
     for i in range(training_data.shape[0]):
-        result = [enc.decode([token]) for token in training_data[i]] # type: ignore
+        result = [tokenizer.decode([token.item()]) for token in training_data[i]] # type: ignore
         results.append(result)
     return results
 
@@ -168,7 +241,7 @@ def __compute_probe_targets_quotes(token_batches : List[List[str]]):
         - tokens_batches : List[str, "batch_size seq"] - a list of tokens (as strings), length batch_size
 
     Returns
-        - all_targets : List[str, "batch_size seq"] - a list that has a 1 if the current token position is in a quote, and a 0 otherwise.
+        - all_targets : List[int, "batch_size seq"] - a list that has a 1 if the current token position is in a quote, and a 0 otherwise.
 
     """
 
