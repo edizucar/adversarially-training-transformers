@@ -11,9 +11,7 @@ from beartype import beartype
 import torch.nn.functional as F
 import wandb
 from torch.optim import Optimizer
-
-lambda_adversarial = 0 #0.001
-probe_learning_rate = 1e-3
+from torch.cuda.amp import GradScaler
 
 # linear probe setup stuff
 class LinearProbe(nn.Module):
@@ -38,7 +36,7 @@ class NonLinearProbe(nn.Module):
 
 
 class ProbeCluster:
-    def __init__(self, number_of_probes, probe_type: str, input_dim: int, output_dim:int):
+    def __init__(self, number_of_probes, probe_type: str, input_dim: int, output_dim:int, lr: float, device:str="cpu"):
         """
         number_of_probes: int -> the number of probes, should be 2x number of transfomer blocks
 
@@ -56,8 +54,10 @@ class ProbeCluster:
         else:
             raise TypeError(f"ProbeCluster: __init__: probe_type should be 'linear' or 'nonlinear', was {probe_type}")
 
+        for probe in self.__probes:
+            probe.to(device)
         # TODO: Consider the Question: Could we have one optimiser containing params for all probes?
-        self.probe_optimisers : List[Optimizer] = [torch.optim.Adam(probe.parameters(), lr=probe_learning_rate) for probe in self.__probes]
+        self.__probe_optimisers : List[Optimizer] = [torch.optim.Adam(probe.parameters(), lr=lr) for probe in self.__probes]
 
     def load_state_dicts(self, state_dicts: List[Dict]):
         if len(self.__probes) != len(state_dicts):
@@ -67,7 +67,7 @@ class ProbeCluster:
                 probe.load_state_dict(state_dict)
 
     @staticmethod
-    def load_from_checkpoint(checkpoint: Dict):
+    def load_from_checkpoint(checkpoint: Dict, lr, device="cpu"):
         num_probes: int = checkpoint["number_of_probes"]
         probe_type: str = checkpoint["probe_type"]
         probe_input_dim: int = checkpoint["probe_input_dim"]
@@ -82,7 +82,7 @@ class ProbeCluster:
                     state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
 
 
-        probe_cluster = ProbeCluster(num_probes, probe_type, probe_input_dim, probe_output_dim)
+        probe_cluster = ProbeCluster(num_probes, probe_type, probe_input_dim, probe_output_dim, lr=lr, device=device)
         probe_cluster.load_state_dicts(probe_state_dicts)
         return probe_cluster
 
@@ -103,30 +103,39 @@ class ProbeCluster:
         for probe in self.__probes:
             probe.train()
 
-    
+    def get_num_probes(self) -> Int:
+        return self.__number_of_probes
 
 
-    def compute_probe_losses(self, activations: List[Float[Tensor, "batch_size seq d_model"]], target: Int[Tensor, "batch_size block_size"]) -> Float[Tensor, "number_of_probes"]:
+    def compute_probe_losses(self, activations: List[Float[Tensor, "batch_size seq d_model"]], target: Int[Tensor, "batch_size block_size"]) -> List[Float[Tensor, ""]]:
+        """
+        Returns a List of length number_of_probes.
+        Each element of the list is a 0 rank Tensor
+        which contains a single float representing the loss of that probe.
+        """
+        
         assert len(activations) == self.__number_of_probes
 
-        probe_losses = torch.zeros(self.__number_of_probes)
+        probe_losses : List[Float] = []
         for i, (activation, probe) in enumerate(zip(activations, self.__probes)):
-            logits = probe(activation).squeeze(-1) # TODO: type annotate me!
-            loss : float = F.binary_cross_entropy_with_logits(logits, target).item() # Really not sure about these types
-            probe_losses[i] = loss
+            logits : Float[Tensor, "batch_size seq"] = probe(activation).squeeze(-1)
+            loss : Float = F.binary_cross_entropy_with_logits(logits, target)
+            probe_losses.append(loss)
         return probe_losses
+
+    def loss_backward_probes(self, activations : List[Float[Tensor, "batch_size seq d_model"]], probe_targets, scaler : GradScaler):
+        self.set_train_mode()
+        detached_activations = [activation.detach() for activation in activations]
+        probe_losses = self.compute_probe_losses(detached_activations, probe_targets)
+        for probe_loss in probe_losses:
+            scaler.scale(probe_loss).backward()
+
+
+    def optimiser_step_probes(self, scaler: GradScaler):
+        for probe_optimiser in self.__probe_optimisers:
+            scaler.step(probe_optimiser)
+            probe_optimiser.zero_grad(set_to_none=True)
     
-    @staticmethod
-    def log_probe_losses(probe_losses_list: List[Float[Tensor, "number_of_probes"]]) -> None:
-        probe_losses : Float[Tensor, "eval_iters number_of_probes"] = torch.stack(probe_losses_list, dim=0)
-        averaged_probe_losses : Float[Tensor, "number_of_probes"] = probe_losses.mean(dim=0)
-
-        log_dict = {}
-        for i in range(averaged_probe_losses.shape[0]):
-            # Add logging values to log_dict
-            pass
-
-
 
 
 def compute_probe_targets_from_training_data(training_data: Int[Tensor, "batch_size block_size"]) -> Int[Tensor, "batch_size block_size"]:
@@ -138,15 +147,6 @@ def compute_probe_targets_from_training_data(training_data: Int[Tensor, "batch_s
     probe_targets = torch.Tensor(list_probe_targets).float()
     return probe_targets
 
-data_dir = os.path.join('data', "tiny_stories")
-data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
-
-# For testing `detokenize` and `compute_probe_targets`
-# block_size = 256
-# batch_size = 64
-# offsets = torch.randint(len(data) - block_size, (batch_size,))
-
-# batched_training_data : Int[Tensor, "batch_size block_size"] = torch.stack([torch.from_numpy((data[offset:offset+block_size]).astype(np.int64)) for offset in offsets])
 
 def __detokenize(training_data: Int[Tensor, "batch_size block_size"]) -> List[List[str]]:
     """

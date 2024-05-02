@@ -33,7 +33,7 @@ from model import GPTConfig, GPT
 from torch import nn
 from torch import Tensor
 from jaxtyping import Float, Int, Bool
-from typing import Dict
+from typing import Dict, List
 import ProbeIntervention
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
@@ -44,6 +44,7 @@ log_interval = 1
 eval_iters = 200
 eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = True # if True, always save a checkpoint after each eval
+never_save_checkpoint = False
 init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
 # wandb logging
 wandb_log = True # disabled by default
@@ -72,9 +73,19 @@ decay_lr = True # whether to decay the learning rate
 warmup_iters = 2000 # how many steps to warm up for
 lr_decay_iters = 600000 # should be ~= max_iters per Chinchilla
 min_lr = 6e-5 # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
+
+# probe settings
+lambda_adversarial = 1e-3
+probe_learning_rate = 1e-3
+probe_type = "linear"
+train_adversarially = True
+
+# Choose what to train
+train_model = True
+train_probes = True
+
 # DDP settings
 backend = 'nccl' # 'nccl', 'gloo', etc.
-ediz = False
 # system
 if torch.cuda.is_available():
     device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
@@ -83,12 +94,22 @@ else:
     device = 'cpu' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
     compile = False # use PyTorch 2.0 to compile the model to be faster
 dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
-
+print(f"dtype : {dtype}")
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open('configurator.py').read()) # overrides from command line or config file
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
+
+# Adjust settings according to what we want to train
+if not train_model:
+    learning_rate = 0
+
+if not train_probes:
+    probe_learning_rate = 0
+
+if not train_adversarially:
+    lambda_adversarial = 0
 
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
@@ -121,14 +142,14 @@ torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
 device_type = 'cuda' if 'cuda' in device else 'cpu' # for later use in torch.autocast
 # note: float16 data type will automatically use a GradScaler
 ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[dtype]
-ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
+ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype) # type: ignore
 
 # poor man's data loader
 data_dir = os.path.join('data', dataset)
 train_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
 val_data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
 
-def get_batch(split, print_stuff=False):
+def get_batch(split):
     # print('----------------')
     # data = massive 1D array containing token indicies
     data = train_data if split == 'train' else val_data
@@ -141,7 +162,7 @@ def get_batch(split, print_stuff=False):
     x : Int[Tensor, "batch_size block_size"] = torch.stack([torch.from_numpy((data[offset:offset+block_size]).astype(np.int64)) for offset in offsets])
     probe_targets = ProbeIntervention.compute_probe_targets_from_training_data(x)
 
-    y = torch.stack([torch.from_numpy((data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
+    y = torch.stack([torch.from_numpy((data[offset+1:offset+1+block_size]).astype(np.int64)) for offset in offsets])
     if device_type == 'cuda':
         # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
         x, y = x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
@@ -152,7 +173,7 @@ def get_batch(split, print_stuff=False):
     return x, y, probe_targets
 
 # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
-iter_num = 0
+iter_num = 1
 best_val_loss = 1e9
 
 # attempt to derive vocab_size from the dataset
@@ -175,8 +196,9 @@ if init_from == 'scratch':
     if meta_vocab_size is None:
         print("defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)")
     model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 50304
-    gptconf = GPTConfig(**model_args)
+    gptconf = GPTConfig(**model_args) # type: ignore
     model = GPT(gptconf)
+    probe_cluster = ProbeIntervention.ProbeCluster(number_of_probes=2*n_layer, probe_type=probe_type, input_dim=n_embd, output_dim=1, lr=probe_learning_rate, device=device)
 elif init_from == 'resume':
     print(f"Resuming training from {out_dir}")
     # resume training from a checkpoint.
@@ -188,7 +210,7 @@ elif init_from == 'resume':
     for k in ['n_layer', 'n_head', 'n_embd', 'block_size', 'bias', 'vocab_size']:
         model_args[k] = checkpoint_model_args[k]
     # create the model
-    gptconf = GPTConfig(**model_args)
+    gptconf = GPTConfig(**model_args) # type: ignore
     model = GPT(gptconf)
     state_dict = checkpoint['model']
     # fix the keys of the state dictionary :(
@@ -203,7 +225,7 @@ elif init_from == 'resume':
     best_val_loss = checkpoint['best_val_loss']
 
 
-    probe_cluster = ProbeIntervention.ProbeCluster.load_from_checkpoint(checkpoint)
+    probe_cluster = ProbeIntervention.ProbeCluster.load_from_checkpoint(checkpoint,lr=probe_learning_rate, device=device)
 
 elif init_from.startswith('gpt2'):
     print(f"Initializing from OpenAI GPT-2 weights: {init_from}")
@@ -239,28 +261,46 @@ if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
 
 # helps estimate an arbitrarily accurate loss over either split using many batches
-@torch.no_grad()
+@torch.inference_mode()
 def estimate_loss():
     out = {}
-    log_dict = {}
     model.eval()
     for split in ['train', 'val']:
-        losses = torch.zeros(eval_iters)
-        probe_losses = []
+        losses = torch.zeros(eval_iters, device=device)
         for k in range(eval_iters):
-            X, Y, probe_targets = get_batch(split) #, split == 'val' and k == 0)
+            X, Y, _ = get_batch(split) #, split == 'val' and k == 0)
             with ctx:
-                logits, loss, activations = model(X, Y)
-            probe_losses.append(probe_cluster.compute_probe_losses(activations, probe_targets))
+                logits, loss,_ = model(X, Y)
             losses[k] = loss.item()
-        if wandb_log:
-            for index, probe_loss in enumerate(probe_losses):
-                thing = 'pre MLP' if index % 2 == 0 else 'post-MLP'
-                layer_number = index // 2
-                log_dict[f"{split}/probe_{layer_number}.{thing}"] = probe_loss.mean()
         out[split] = losses.mean()
     model.train()
-    return out, log_dict
+    return out
+
+@torch.inference_mode()
+def estimate_probe_loss() -> Dict[str, List[Float]]:
+    model.eval()
+    probe_cluster.set_eval_mode()
+    out = {}
+    for split in ['train', 'val']:
+        probe_losses = torch.zeros(eval_iters, probe_cluster.get_num_probes(), device=device) 
+        for k in range(eval_iters):
+            X, Y, probe_targets = get_batch(split) 
+            with ctx:
+                _, _, activations = model(X, Y)
+            # Remove losses from tensors
+            l = [loss.item() for loss in probe_cluster.compute_probe_losses(activations, probe_targets)]
+            probe_losses[k] = torch.Tensor(l)
+        
+        averaged_probe_losses : Float[Tensor, "number_of_probes"] = probe_losses.mean(dim=0)
+        
+        out[split] = [averaged_probe_losses[i].item() for i in range(probe_cluster.get_num_probes())]
+
+    probe_cluster.set_train_mode()
+    model.train()
+    return out
+
+
+
 
 # learning rate decay scheduler (cosine with warmup)
 def get_lr(it):
@@ -318,18 +358,29 @@ while True:
 
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
-        losses, probe_loss_dict = estimate_loss()
+
+         # Evaluate model and print statistics
+        losses = estimate_loss() if train_model else {"train":10.0, "val": 10.0}
+        probe_eval_losses = estimate_probe_loss() if train_probes else {}
         print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+        # Log evaluation stuff to wandb
         if wandb_log:
-            wandb.log({
+            log_dict = {
                 "iteration": iter_num,
                 "train/model_loss": losses['train'],
                 "val/model_loss": losses['val'],
                 "lr": lr,
                 "mfu": running_mfu*100, # convert to percentage
-                **probe_loss_dict
-            })
-        if losses['val'] < best_val_loss or always_save_checkpoint:
+                "train/ten": 10,
+                "val/twenty":20,
+            }
+
+            probe_log_dict = {f"{split}/probe-{'attn' if i%2==0 else 'MLP'}-layer-{i//2}":probe_eval_losses[split][i] for split in probe_eval_losses for i in range(probe_cluster.get_num_probes())}
+                
+            wandb.log(log_dict | probe_log_dict)
+
+        # Save checkpoint
+        if not never_save_checkpoint and losses['val'] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses['val']
             if iter_num > 0:
                 checkpoint = {
@@ -341,10 +392,13 @@ while True:
                     'config': config,
                 }
 
+                # Add information about probes to checkpoint
                 checkpoint |= probe_cluster.state_dict()
 
                 print(f"saving checkpoint to {out_dir}")
                 torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
+
+    # MARS: we can ignore this            
     if iter_num == 0 and eval_only:
         break
 
@@ -356,44 +410,42 @@ while True:
             # the official way to do this is with model.no_sync() context manager, but
             # I really dislike that this bloats the code and forces us to repeat code
             # looking at the source of that context manager, it just toggles this variable
-            model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
+            model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1) # type: ignore
+
+
+        X, Y, probe_targets = get_batch('train')
         with ctx:
             logits, transformer_loss, activations = model(X, Y)
-            transformer_loss = transformer_loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
+            total_loss = transformer_loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
 
-        # immediately async prefetch next batch while model is doing the forward pass on the GPU
-        X, Y, probe_targets = get_batch('train')
-        # print(X)
-
-        # TODO: make function which returns single value (i.e probe loss) to add to total_loss
-        accumulated_adversarial_loss = 0
-        for activation, probe in zip(activations, probes):
-            detached_activation = activation.detach()
-            probe_loss = compute_in_quote_probe_loss(probe, detached_activation, probe_targets)
-            scaler.scale(probe_loss).backward()
-
-            # Now calculate adversarial loss using non-detached activations
-            adversarial_probe_loss = -compute_in_quote_probe_loss(probe, activation, probe_targets)
-            accumulated_adversarial_loss += adversarial_probe_loss
-        
-        total_loss = transformer_loss + lambda_adversarial * accumulated_adversarial_loss
-
+        accumulated_adversarial_loss = torch.tensor(0, device=device,dtype=torch.float) 
+        # Train probes:
+        probe_cluster.loss_backward_probes(activations, probe_targets, scaler)
+        # Train model: 
+        probe_cluster.set_eval_mode()
+        probe_losses : List[Float[Tensor, ""]] = probe_cluster.compute_probe_losses(activations, probe_targets)
+        probe_cluster.set_train_mode()
+        for probe_loss in probe_losses:
+            accumulated_adversarial_loss -= probe_loss # negative because we training adversarially
+        weighted_adversarial_loss = lambda_adversarial * accumulated_adversarial_loss
+        total_loss += weighted_adversarial_loss
         # backward pass, with gradient scaling if training in fp16
         scaler.scale(total_loss).backward()
+
+
     # clip the gradient
     if grad_clip != 0.0:
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
     # step the optimizer and scaler if training in fp16
     scaler.step(optimizer)
-    # TODO: make this a single call (what is scaler? Does it matter where scaler.update occurs?)
-    for probe_optimizer in probe_optimizers:
-        scaler.step(probe_optimizer)
     scaler.update()
     # flush the gradients as soon as we can, no need for this memory anymore
     optimizer.zero_grad(set_to_none=True)
-    for probe_optimizer in probe_optimizers:
-        probe_optimizer.zero_grad(set_to_none=True)
+
+    # step the probes
+    if 1 == 1:
+        probe_cluster.optimiser_step_probes(scaler)
 
     # timing and logging
     t1 = time.time()
@@ -406,7 +458,7 @@ while True:
         if local_iter_num >= 5: # let the training loop settle a bit
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
-        print(f"iter {iter_num}: loss {lossf:.4f}, probe loss {-accumulated_adversarial_loss:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
+        print(f"iter {iter_num}, loss {lossf:.4f}, lr {lr}, probe loss {accumulated_adversarial_loss}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
     iter_num += 1
     local_iter_num += 1
 
