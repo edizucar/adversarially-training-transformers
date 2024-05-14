@@ -87,6 +87,50 @@ def in_quotes_feature(
         features=torch.tensor(quote_features, device=tokens.device),
     )
 
+@jaxtyped(typechecker=beartype)
+def in_quotes_feature_demian(
+        tokens: Int[Tensor, "batch seq_len"],
+        tokenizer: Tokenizer = tiktoken.get_encoding("gpt2"),
+        qmark_in_quote: bool = False
+) -> BinaryFeatureExtractorOutput:
+    batch_size,seq_len = tokens.shape
+    texts : List[List[str]] = __detokenize(tokens, tokenizer)
+
+    assert len(texts) == batch_size and len(texts[0]) == seq_len
+
+    quote_features: list[list[bool]] = []
+
+    for text in texts:
+
+        quote_feature: list[bool] = []
+        inside_quote: bool = False # assume we arent in a quote to start
+
+        for i, token in enumerate(text):
+            if i == 0 and token[0] == '"':
+                # we don't know if it is a start/end quote so just ignore it
+                continue
+            if '"' in token:
+                if token[0] == '"':
+                    # quote is at beginning of token so check previous token
+                    is_start_quote = tokens[i-1][-1] in [' ', '\n', '\t']
+                else:
+                    quote_index = token.index('"')
+                    is_start_quote = token[quote_index-1] in [' ', '\n', '\t']
+                if is_start_quote:
+                    quote_feature.extend([False] * ((i + int(not qmark_in_quote)) - len(quote_feature)))
+                else:
+                    quote_feature.extend([True] * ((i + int(qmark_in_quote)) - len(quote_feature)))
+                inside_quote = is_start_quote
+        # Handle trailing tokens after the last quote
+        quote_feature.extend([inside_quote] * (len(text) - len(quote_feature)))
+        quote_features.append(quote_feature)
+
+    return BinaryFeatureExtractorOutput(
+        text=texts,
+        tokens=tokens,
+        features=torch.tensor(quote_features, device=tokens.device),
+    )
+
 in_quotes_no_qmark_feature: FeatureExtractor = lambda tokens, tokenizer: in_quotes_feature(tokens, tokenizer, qmark_in_quote=False)
 in_quotes_with_qmark_feature: FeatureExtractor = lambda tokens, tokenizer: in_quotes_feature(tokens, tokenizer, qmark_in_quote=True)
 
