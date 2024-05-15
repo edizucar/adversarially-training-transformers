@@ -4,6 +4,7 @@ import wandb
 import tiktoken
 from tiktoken import Encoding as Tokenizer
 from jaxtyping import Float, Int, Bool, jaxtyped
+from typeguard import typechecked
 from typing import Dict, List, NamedTuple, Callable
 import os
 import numpy as np
@@ -41,7 +42,7 @@ BinaryFeatureExtractorOutput = NamedTuple(
     [
         ("text", list[list[str]]), # batched (hence nested)
         ("tokens", Int[torch.Tensor, "batch seq_len"]),
-        ("features", Bool[torch.Tensor, "batch seq_len"]),
+        ("features", Int[torch.Tensor, "batch seq_len"]),
     ],
 )
 
@@ -84,7 +85,7 @@ def in_quotes_feature(
     return BinaryFeatureExtractorOutput(
         text=text,
         tokens=tokens,
-        features=torch.tensor(quote_features, device=tokens.device),
+        features=torch.tensor(quote_features, device=tokens.device, dtype=torch.float),
     )
 
 @jaxtyped(typechecker=beartype)
@@ -134,25 +135,39 @@ def in_quotes_feature_demian(
 in_quotes_no_qmark_feature: FeatureExtractor = lambda tokens, tokenizer: in_quotes_feature(tokens, tokenizer, qmark_in_quote=False)
 in_quotes_with_qmark_feature: FeatureExtractor = lambda tokens, tokenizer: in_quotes_feature(tokens, tokenizer, qmark_in_quote=True)
 
-@jaxtyped(typechecker=beartype)
-def display_results_from_tokens(tokens: Int[Tensor, "seq_len"], tokenizer: Tokenizer = tiktoken.get_encoding("gpt2"), feature_extractor: FeatureExtractor = in_quotes_feature) -> None:
-    seq_len = tokens.shape[0]
-    text,_, quote_features_tensor = feature_extractor(tokens.unsqueeze(dim=0), tokenizer)
-    assert len(text) == 1 and len(text[0]) == seq_len
-    print("Input text:")
-    for token, feature in zip(text[0], quote_features_tensor[0]):
+
+# tokens: Int64[Tensor, "seq_len"] <- this doesn't work... why???
+#@jaxtyped(typechecker=typechecked)
+def display_features_from_tokens_and_feature_tensor(tokens : Int[Tensor, "seq_len"] , feature_tensor: Bool[Tensor, "seq_len"]):
+    text = __detokenize(tokens.unsqueeze(dim=0))[0]
+    print(type(tokens))
+    # Print Key:
+    print(f"------ Probe Feature Prediction --------")
+    print("Tokens in blue indicate that the probe predicts the feature is present")
+    print("Tokens with no colouring indicate that the probe predicts the feature is not present")
+    print(" -> Note: tokens are contained within ''")
+
+    for  token, feature in zip(text,feature_tensor):
         if feature == 1:
             # print(f"\033[43m{token}\033[0m", end=" ")
             # dark blue background
             print(f"\033[44m'{token}'\033[0m", end=" ")
         else:
             print(f"'{token}'", end=" ")
-    print("\n")
+    print("\n ------------------------------------")
+
 
 @jaxtyped(typechecker=beartype)
-def display_results_from_text(text: str, tokenizer: Tokenizer, feature_extractor: FeatureExtractor) -> None:
+def display_features_from_tokens(tokens: Int[Tensor, "seq_len"], tokenizer: Tokenizer = tiktoken.get_encoding("gpt2"), feature_extractor: FeatureExtractor = in_quotes_feature) -> None:
+    seq_len = tokens.shape[0]
+    text,_, quote_features_tensor = feature_extractor(tokens.unsqueeze(dim=0), tokenizer)
+    assert len(text) == 1 and len(text[0]) == seq_len
+    display_features_from_tokens_and_feature_tensor(tokens[0], quote_features_tensor.squeeze(dim=0))
+
+@jaxtyped(typechecker=beartype)
+def display_features_from_text(text: str, tokenizer: Tokenizer, feature_extractor: FeatureExtractor) -> None:
     tokens : Int[Tensor, "seq_len"] = torch.Tensor(tokenizer.encode(text)).type(torch.int)
-    display_results_from_tokens(tokens, tokenizer, feature_extractor)
+    display_features_from_tokens(tokens, tokenizer, feature_extractor)
 
 class ProbeCluster:
     def __init__(self, number_of_probes, probe_type: str, input_dim: int, output_dim:int, lr: float, device:str="cpu"):
@@ -225,8 +240,8 @@ class ProbeCluster:
     def get_num_probes(self) -> Int:
         return self.__number_of_probes
 
-
-    def compute_probe_losses(self, activations: List[Float[Tensor, "batch_size seq d_model"]], target: Int[Tensor, "batch_size block_size"]) -> List[Float[Tensor, ""]]:
+    @jaxtyped(typechecker=beartype)
+    def compute_probe_losses(self, activations: List[Float[Tensor, "batch_size seq d_model"]], target: Float[Tensor, "batch_size seq_len"]) -> List[Float[Tensor, ""]]:
         """
         Returns a List of length number_of_probes.
         Each element of the list is a 0 rank Tensor
@@ -238,9 +253,47 @@ class ProbeCluster:
         probe_losses : List[Float] = []
         for i, (activation, probe) in enumerate(zip(activations, self.__probes)):
             logits : Float[Tensor, "batch_size seq"] = probe(activation).squeeze(-1)
-            loss : Float = F.binary_cross_entropy_with_logits(logits, target)
+            loss : Float[Tensor, "batch_size seq"] = F.binary_cross_entropy_with_logits(logits, target)
             probe_losses.append(loss)
         return probe_losses
+
+    def compute_probe_predictions(self, activations: List[Float[Tensor, "batch_size seq d_model"]], threshold: Float = .5) -> List[Bool[Tensor, "batch_size seq_len"]]:
+        predictions : List[Bool[Tensor, "batch_size seq_len"]] = []
+        for (activation, probe) in zip(activations, self.__probes):
+            logits : Float[Tensor, "batch_size seq"] = probe(activation).squeeze(-1)
+            prediction = F.sigmoid(logits) > threshold
+            predictions.append(prediction)
+        return predictions
+
+    def compute_accuracies_from_predictions(self, predictions: List[Bool[Tensor, "batch_size seq_len"]], targets: Bool[Tensor, "batch_size seq_len"]) -> List[Float[Tensor, "batch_size seq_len"]]:
+        accuracies : List[Float[Tensor, "batch_size seq_len"]] = []
+        for prediction in predictions:
+            accuracy = prediction == targets
+            accuracies.append(accuracy)
+        return accuracies
+    
+    def compute_accuracies(self, activations: List[Float[Tensor, "batch_size seq_len d_model"]], targets: Bool[Tensor, "batch_size seq_len"], threshold : Float = .5) -> List[Float]:
+        """
+        Returns a list of accuracies, one for each probe
+        """
+        predictions = self.compute_probe_predictions(activations, threshold)
+        accuracies = [probe_acc.type(torch.float).mean().item() for probe_acc in self.compute_accuracies_from_predictions(predictions, targets)]
+        return accuracies
+
+    @jaxtyped(typechecker=beartype)
+    def display_probe_predictions(self, text: str, model, device, tokenizer: Tokenizer = tiktoken.get_encoding("gpt2")) -> None:
+        tokens : Int[Tensor, "seq_len"] = torch.Tensor(tokenizer.encode(text)).to(device).type(torch.int64)
+        batched_tokens : Int[Tensor, "batch_size seq_len"] = tokens.unsqueeze(dim=0)
+        activations : List[Float[Tensor, "1 seq_len d_model"]]
+
+        _, _, activations = model(batched_tokens[:,:-1],batched_tokens[:,1:])
+        assert len(activations) == self.__number_of_probes
+
+        predictions = self.compute_probe_predictions(activations)
+        for i,prediction in enumerate(predictions):
+            print(f"Probe {i}:")
+            display_features_from_tokens_and_feature_tensor(tokens, prediction.squeeze(dim=0))
+            print("\n")
 
     def loss_backward_probes(self, activations : List[Float[Tensor, "batch_size seq d_model"]], probe_targets, scaler : GradScaler):
         self.set_train_mode()
@@ -254,7 +307,9 @@ class ProbeCluster:
         for probe_optimiser in self.__probe_optimisers:
             scaler.step(probe_optimiser)
             probe_optimiser.zero_grad(set_to_none=True)
-    
+
+    def show_predictions(self, text: List[str], activations: List[Float[Tensor, "seq_len d_model"]]):
+        pass
 
 def compute_probe_targets_from_training_data(training_data: Int[Tensor, "batch_size block_size"]) -> Int[Tensor, "batch_size block_size"]:
     """

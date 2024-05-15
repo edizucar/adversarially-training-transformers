@@ -2,7 +2,7 @@
 # good for debugging and playing on macbooks and such
 
 out_dir = 'out-tiny-stories-new'
-eval_interval = 1000 # keep frequent because we'll overfit
+eval_interval = 100 # keep frequent because we'll overfit
 eval_iters = 50
 log_interval = 100 # don't print too too often
 
@@ -48,4 +48,4 @@ train_adversarially = False
 # on macbook also add
 # device = 'cpu'  # run on cpu only
 # compile = False # do not torch compile the model
-init_from = 'scratch'
+init_from = 'resume'

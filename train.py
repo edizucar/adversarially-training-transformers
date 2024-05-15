@@ -268,37 +268,47 @@ def estimate_loss():
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters, device=device)
         for k in range(eval_iters):
-            X, Y, _ = get_batch(split) #, split == 'val' and k == 0)
+            X, Y, _ = get_batch(split)
             with ctx:
-                logits, loss,_ = model(X, Y)
+                _, loss, _ = model(X, Y)
             losses[k] = loss.item()
         out[split] = losses.mean()
     model.train()
     return out
 
 @torch.inference_mode()
-def estimate_probe_loss() -> Dict[str, List[Float]]:
+def estimate_probe_loss() -> Dict:
     model.eval()
     probe_cluster.set_eval_mode()
-    out = {}
+    out = {'train':{}, 'val':{}}
     for split in ['train', 'val']:
-        probe_losses = torch.zeros(eval_iters, probe_cluster.get_num_probes(), device=device) 
+        probe_losses = torch.zeros(eval_iters, probe_cluster.get_num_probes(), device=device)
+        probe_accuracies = torch.zeros(eval_iters, probe_cluster.get_num_probes(), device=device)
         for k in range(eval_iters):
             X, Y, probe_targets = get_batch(split) 
             with ctx:
                 _, _, activations = model(X, Y)
             # Remove losses from tensors
             l = [loss.item() for loss in probe_cluster.compute_probe_losses(activations, probe_targets)]
-            probe_losses[k] = torch.Tensor(l)
+            probe_losses[k] = torch.Tensor(l).to(device)
+
+            probe_accuracies[k] = torch.Tensor(probe_cluster.compute_accuracies(activations, probe_targets)).to(device)
+
         
         averaged_probe_losses : Float[Tensor, "number_of_probes"] = probe_losses.mean(dim=0)
-        
-        out[split] = [averaged_probe_losses[i].item() for i in range(probe_cluster.get_num_probes())]
+        averaged_probe_accuracies : Float[Tensor, "number_of_probes"] = probe_accuracies.mean(dim=0)       
+        out[split]["loss"] = [averaged_probe_losses[i].item() for i in range(probe_cluster.get_num_probes())]
+        out[split]["accuracy"] = [averaged_probe_accuracies[i].item() for i in range(probe_cluster.get_num_probes())]
+
+    # Show an example of the probes in action in stdout
+    probe_cluster.display_probe_predictions(
+        """
+        In the heart of an ancient forest, a wise old owl named Hoot perched on a gnarled branch, overlooking a meandering brook. Beside the water, a curious young fox approached and asked, "What's the secret to wisdom, old owl?" Hoot, puffing his feathers thoughtfully, replied, "True wisdom, young fox, comes from listening more to the world around you than you speak to it."
+        """, model, device=device)
 
     probe_cluster.set_train_mode()
     model.train()
     return out
-
 
 
 
@@ -342,6 +352,20 @@ if wandb_log and master_process:
 #     probe.linear.bias.data.zero_()
 
 
+# Want to exit gracefully on Ctrl+C
+
+import signal
+
+# Flag to indicate whether the program should stop
+stop_requested = False
+
+def signal_handler(sig, frame):
+    global stop_requested
+    print("Ctrl+C pressed. Finishing current task...")
+    stop_requested = True
+
+# Register the signal handler
+signal.signal(signal.SIGINT, signal_handler)
 
 # training loop
 X, Y, probe_targets = get_batch('train') # fetch the very first batch
@@ -361,7 +385,7 @@ while True:
 
          # Evaluate model and print statistics
         losses = estimate_loss() if train_model else {"train":10.0, "val": 10.0}
-        probe_eval_losses = estimate_probe_loss() if train_probes else {}
+        probe_eval_stats = estimate_probe_loss() if train_probes else {}
         print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
         # Log evaluation stuff to wandb
         if wandb_log:
@@ -375,7 +399,12 @@ while True:
                 "val/twenty":20,
             }
 
-            probe_log_dict = {f"{split}/probe-{'attn' if i%2==0 else 'MLP'}-layer-{i//2}":probe_eval_losses[split][i] for split in probe_eval_losses for i in range(probe_cluster.get_num_probes())}
+            
+            probe_log_dict = {}
+            for split in probe_eval_stats:
+                for stat in probe_eval_stats[split]:
+                    for i in range(probe_cluster.get_num_probes()):
+                        probe_log_dict[f"{split}/probe-{stat}-{'attn' if i%2==0 else 'MLP'}-layer-{i//2}"] = probe_eval_stats[split][stat][i] 
                 
             wandb.log(log_dict | probe_log_dict)
 
@@ -397,11 +426,11 @@ while True:
 
                 print(f"saving checkpoint to {out_dir}")
                 torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
+     
 
     # MARS: we can ignore this            
     if iter_num == 0 and eval_only:
         break
-
     # forward backward update, with optional gradient accumulation to simulate larger batch size
     # and using the GradScaler if data type is float16
     for micro_step in range(gradient_accumulation_steps):
@@ -444,8 +473,7 @@ while True:
     optimizer.zero_grad(set_to_none=True)
 
     # step the probes
-    if 1 == 1:
-        probe_cluster.optimiser_step_probes(scaler)
+    probe_cluster.optimiser_step_probes(scaler)
 
     # timing and logging
     t1 = time.time()
@@ -463,7 +491,8 @@ while True:
     local_iter_num += 1
 
     # termination conditions
-    if iter_num > max_iters:
+    if iter_num > max_iters or stop_requested:
+        print("Exiting training loop!")
         break
 
 if ddp:
