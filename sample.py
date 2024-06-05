@@ -9,26 +9,10 @@ import tiktoken
 from model import GPTConfig, GPT
 
 # -----------------------------------------------------------------------------
-init_from = 'gpt2-xl' # either 'resume' (from an out_dir) or a gpt2 variant (e.g. 'gpt2-xl')
-out_dir = 'out' # ignored if init_from is not 'resume'
+init_from = 'resume' # either 'resume' (from an out_dir) or a gpt2 variant (e.g. 'gpt2-xl')
+out_dir = 'out-tiny-stories-new' # ignored if init_from is not 'resume'
 start = "FILE:prompt.txt" # or "<|endoftext|>" or etc. Can also specify a file, use as: "FILE:prompt.txt"
-start = """
-Q: What is 5 + 5
-A: 10
----
-Q: What is Shakespeare's first name
-A: William
----
-Q: Write me a joke
-A: You can't trust atoms, they make up everything
----
-Q: How does Aristotle's concept of the "golden mean" apply to modern life, particularly in balancing work and leisure?
-A: Aristotle's concept of the "golden mean" suggests that virtue lies in the balance between extremes. Applied to modern life, particularly in balancing work and leisure, this philosophy encourages individuals to avoid the extremes of overworking or being too idle.
----
-Q: How has the rise of social media influenced interpersonal communication skills in the 21st century?
-A:The rise of social media has revolutionized interpersonal communication by enhancing digital skills and global connectivity, allowing people to maintain relationships across distances. However, it has also led to a decline in face-to-face interactions, fostering superficial exchanges and potentially diminishing nuanced communication skills. Social media's anonymity and distance can lead to negative behaviors, impacting how individuals interact. Ultimately, while it offers cultural exchange and broader perspectives, its influence on interpersonal skills hinges on balancing online and offline interactions.
-----
-"""
+start = "Jane went to the park and said"
 num_samples = 1 # number of samples to draw
 max_new_tokens = 500 # number of tokens generated in each sample
 temperature = 0.8 # 1.0 = no change, < 1.0 = less random, > 1.0 = more random, in predictions

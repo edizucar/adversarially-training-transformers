@@ -22,7 +22,7 @@ import math
 import pickle
 from contextlib import nullcontext
 import tiktoken
-
+import matplotlib.pyplot as plt
  
 import numpy as np
 import torch
@@ -137,6 +137,7 @@ print(f"tokens per iteration will be: {tokens_per_iter:,}")
 if master_process:
     os.makedirs(out_dir, exist_ok=True)
 torch.manual_seed(1337 + seed_offset)
+torch.manual_seed(6)
 torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
 device_type = 'cuda' if 'cuda' in device else 'cpu' # for later use in torch.autocast
@@ -149,7 +150,7 @@ data_dir = os.path.join('data', dataset)
 train_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
 val_data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
 
-def get_batch(split):
+def get_batch(split) -> tuple[Int[Tensor, "batch_size block_size"], Int[Tensor, "batch_size block_size"], Int[torch.Tensor, "batch seq_len"]]:
     # print('----------------')
     # data = massive 1D array containing token indicies
     data = train_data if split == 'train' else val_data
@@ -160,7 +161,7 @@ def get_batch(split):
     offsets = torch.randint(len(data) - block_size, (batch_size,))
 
     x : Int[Tensor, "batch_size block_size"] = torch.stack([torch.from_numpy((data[offset:offset+block_size]).astype(np.int64)) for offset in offsets])
-    _, _, probe_targets = ProbeIntervention.in_quotes_feature(x)
+    _, _, probe_targets = ProbeIntervention.in_quotes_feature_demian(x)
 
     y = torch.stack([torch.from_numpy((data[offset+1:offset+1+block_size]).astype(np.int64)) for offset in offsets])
     if device_type == 'cuda':
@@ -173,7 +174,7 @@ def get_batch(split):
     return x, y, probe_targets
 
 # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
-iter_num = 1
+iter_num = 0 
 best_val_loss = 1e9
 
 # attempt to derive vocab_size from the dataset
@@ -277,7 +278,7 @@ def estimate_loss():
     return out
 
 @torch.inference_mode()
-def estimate_probe_loss() -> Dict:
+def estimate_probe_loss(display_probe_predictions=False) -> Dict:
     model.eval()
     probe_cluster.set_eval_mode()
     out = {'train':{}, 'val':{}}
@@ -300,17 +301,111 @@ def estimate_probe_loss() -> Dict:
         out[split]["loss"] = [averaged_probe_losses[i].item() for i in range(probe_cluster.get_num_probes())]
         out[split]["accuracy"] = [averaged_probe_accuracies[i].item() for i in range(probe_cluster.get_num_probes())]
 
-    # Show an example of the probes in action in stdout
-    probe_cluster.display_probe_predictions(
-        """
-        In the heart of an ancient forest, a wise old owl named Hoot perched on a gnarled branch, overlooking a meandering brook. Beside the water, a curious young fox approached and asked, "What's the secret to wisdom, old owl?" Hoot, puffing his feathers thoughtfully, replied, "True wisdom, young fox, comes from listening more to the world around you than you speak to it."
-        """, model, device=device)
+    if display_probe_predictions:
+        # Show an example of the probes in action in stdout
+        probe_cluster.display_probe_predictions(
+        """In the heart of an ancient forest, a wise old owl named Hoot perched on a gnarled branch, overlooking a meandering brook. Beside the water, a curious young fox approached and asked, "What's the secret to wisdom, old owl?" Hoot, puffing his feathers thoughtfully, replied, "True wisdom, young fox, comes from listening more to the world around you than you speak to it.\"""", model, device=device)
 
     probe_cluster.set_train_mode()
     model.train()
     return out
 
 
+@torch.inference_mode()
+def probe_accuracy_sampling(probe_num: int, num_batches: int = 1) -> tuple[list[tuple[float,dict]], float]:
+
+    data = []
+    model.eval()
+    probe_cluster.set_eval_mode()
+    overall_acc : float = 0
+    for batch_num in range(num_batches):
+        X, Y, probe_targets = get_batch("val")
+        with ctx:
+            _, _, activations = model(X, Y)
+            b_text, b_tokens, b_feature_targets = ProbeIntervention.in_quotes_feature_demian(X)
+        for batch in range(batch_size):
+            a = [a[batch].unsqueeze(dim=0) for a in activations]
+            pt = probe_targets[batch].unsqueeze(dim=0)
+            feature_predictions = probe_cluster.compute_probe_predictions(a)[probe_num]
+            acc : Float = probe_cluster.compute_accuracies(a,pt)[probe_num]
+
+            text = b_text[batch]
+            tokens = b_tokens[batch]
+            feature_targets = b_feature_targets[batch]
+
+            
+            data.append((acc, {
+                "text":text,
+                "tokens":tokens,
+                "feature_predictions":feature_predictions.squeeze(dim=0),
+                "feature_targets":feature_targets,
+                "feature_targets_2": probe_targets[batch]
+            }))
+            overall_acc += acc
+
+
+
+    data.sort(key = lambda x:x[0])
+    overall_acc /= len(data)
+
+    # print(f"acc: {data[-1][0]}")
+    # print("predictions")
+    # ProbeIntervention.display_features_from_tokens_and_feature_tensor(data[-1][1]["tokens"],data[-1][1]["feature_predictions"])
+
+    # print("Correct 1:")
+    # ProbeIntervention.display_features_from_tokens_and_feature_tensor(data[-1][1]["tokens"],data[-1][1]["feature_targets"])
+
+    # print("Correct 2:")
+    # ProbeIntervention.display_features_from_tokens_and_feature_tensor(data[-1][1]["tokens"],data[-1][1]["feature_targets_2"])
+    model.train()
+    probe_cluster.set_train_mode()
+    return data, overall_acc
+
+def process_probe_prediction_distribution(data: list[tuple[float, dict]], probe_num: int, display: bool):
+
+    # Example list of numbers
+    numbers : list[float] = [acc for acc,_ in data]
+
+    # # Creating a box and whisker plot
+    # plt.boxplot(numbers)
+
+    # # Adding titles and labels
+    # plt.title('Probe Accuracy Distribution')
+    # plt.ylabel('Accuracy (0-1)')
+
+    # Plotting the histogram
+    plt.hist(numbers, bins=10, range=(0, 1), edgecolor='black')
+
+    # Adding titles and labels
+    plt.title('Accuracy of Probes (0 - 1)')
+    plt.xlabel('Accuracy')
+    plt.ylabel('Frequency')
+    plt.savefig(f"graphs/{wandb_run_name}-probe{probe_num}.png")
+
+    print("-"*6 + "Probe prediction accuracy distribution" + "-"*6)
+    print("Worst Performer: ")
+    print(f"acc = {data[0][0]}")
+    # 0th item in list has lowest accuracy
+    print("Let's see what is wrong and right!")
+    ProbeIntervention.display_features_from_tokens_and_feature_tensor(
+        data[0][1]["tokens"],
+        data[0][1]["feature_predictions"] == data[0][1]["feature_targets"]
+    )
+    ProbeIntervention.display_features_from_tokens_and_feature_tensor(
+       data[0][1]["tokens"],
+       data[0][1]["feature_predictions"],
+    )
+    print("\n Best Perfomer: ")
+    # Last item in list has highest accuracy
+    print(f"acc = {data[-1][0]}")
+    ProbeIntervention.display_features_from_tokens_and_feature_tensor(
+        data[-1][1]["tokens"],
+        data[-1][1]["feature_predictions"],
+    )
+    print("\n")
+    # print("accs: ")
+    # print([acc for acc,_ in data])
+    # print("-"*15)
 
 # learning rate decay scheduler (cosine with warmup)
 def get_lr(it):
@@ -409,7 +504,7 @@ while True:
             wandb.log(log_dict | probe_log_dict)
 
         # Save checkpoint
-        if not never_save_checkpoint and losses['val'] < best_val_loss or always_save_checkpoint:
+        if not never_save_checkpoint and losses['val'] < best_val_loss or always_save_checkpoint or iter_num > max_iters:
             best_val_loss = losses['val']
             if iter_num > 0:
                 checkpoint = {
@@ -451,9 +546,8 @@ while True:
         # Train probes:
         probe_cluster.loss_backward_probes(activations, probe_targets, scaler)
         # Train model: 
-        probe_cluster.set_eval_mode()
-        probe_losses : List[Float[Tensor, ""]] = probe_cluster.compute_probe_losses(activations, probe_targets)
-        probe_cluster.set_train_mode()
+        with torch.inference_mode():
+            probe_losses : List[Float[Tensor, ""]] = probe_cluster.compute_probe_losses(activations, probe_targets)
         for probe_loss in probe_losses:
             accumulated_adversarial_loss -= probe_loss # negative because we training adversarially
         weighted_adversarial_loss = lambda_adversarial * accumulated_adversarial_loss
@@ -491,7 +585,21 @@ while True:
     local_iter_num += 1
 
     # termination conditions
-    if iter_num > max_iters or stop_requested:
+    if iter_num > max_iters:
+        print("Final iteration reached!")
+        print("\n Display final information:")
+        #estimate_probe_loss(display_probe_predictions=True)
+        table = ""
+        for probe_num in range(n_layer*2):
+            data, acc = probe_accuracy_sampling(probe_num=probe_num, num_batches = 20) # final probe
+            table += f"{probe_num} : {acc} \n"
+            process_probe_prediction_distribution(data, probe_num=probe_num, display=probe_num == n_layer*2-1)
+        print(table)
+        break
+
+
+
+    if stop_requested:
         print("Exiting training loop!")
         break
 

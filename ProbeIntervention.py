@@ -15,6 +15,8 @@ import wandb
 from torch.optim import Optimizer
 from torch.cuda.amp import GradScaler
 
+GPT2_TOKENIZER = tiktoken.get_encoding("gpt2")
+
 # linear probe setup stuff
 class LinearProbe(nn.Module):
     def __init__(self, input_dim, output_dim):
@@ -51,7 +53,7 @@ FeatureExtractor = Callable[[Int[Tensor, "batch seq_len"], Tokenizer],BinaryFeat
 @jaxtyped(typechecker=beartype)
 def in_quotes_feature(
         tokens: Int[Tensor, "batch seq_len"],
-        tokenizer: Tokenizer = tiktoken.get_encoding("gpt2"),
+        tokenizer: Tokenizer = GPT2_TOKENIZER,
         qmark_in_quote: bool = False
 ) -> BinaryFeatureExtractorOutput:
     batch_size,seq_len = tokens.shape
@@ -91,7 +93,7 @@ def in_quotes_feature(
 @jaxtyped(typechecker=beartype)
 def in_quotes_feature_demian(
         tokens: Int[Tensor, "batch seq_len"],
-        tokenizer: Tokenizer = tiktoken.get_encoding("gpt2"),
+        tokenizer: Tokenizer = GPT2_TOKENIZER,
         qmark_in_quote: bool = False
 ) -> BinaryFeatureExtractorOutput:
     batch_size,seq_len = tokens.shape
@@ -111,9 +113,10 @@ def in_quotes_feature_demian(
                 # we don't know if it is a start/end quote so just ignore it
                 continue
             if '"' in token:
+                # token[0] == '."'
                 if token[0] == '"':
                     # quote is at beginning of token so check previous token
-                    is_start_quote = tokens[i-1][-1] in [' ', '\n', '\t']
+                    is_start_quote = text[i-1][-1] in [' ', '\n', '\t']
                 else:
                     quote_index = token.index('"')
                     is_start_quote = token[quote_index-1] in [' ', '\n', '\t']
@@ -129,7 +132,7 @@ def in_quotes_feature_demian(
     return BinaryFeatureExtractorOutput(
         text=texts,
         tokens=tokens,
-        features=torch.tensor(quote_features, device=tokens.device),
+        features=torch.tensor(quote_features, device=tokens.device, dtype=torch.float),
     )
 
 in_quotes_no_qmark_feature: FeatureExtractor = lambda tokens, tokenizer: in_quotes_feature(tokens, tokenizer, qmark_in_quote=False)
@@ -140,13 +143,8 @@ in_quotes_with_qmark_feature: FeatureExtractor = lambda tokens, tokenizer: in_qu
 #@jaxtyped(typechecker=typechecked)
 def display_features_from_tokens_and_feature_tensor(tokens : Int[Tensor, "seq_len"] , feature_tensor: Bool[Tensor, "seq_len"]):
     text = __detokenize(tokens.unsqueeze(dim=0))[0]
-    print(type(tokens))
     # Print Key:
     print(f"------ Probe Feature Prediction --------")
-    print("Tokens in blue indicate that the probe predicts the feature is present")
-    print("Tokens with no colouring indicate that the probe predicts the feature is not present")
-    print(" -> Note: tokens are contained within ''")
-
     for  token, feature in zip(text,feature_tensor):
         if feature == 1:
             # print(f"\033[43m{token}\033[0m", end=" ")
@@ -157,8 +155,12 @@ def display_features_from_tokens_and_feature_tensor(tokens : Int[Tensor, "seq_le
     print("\n ------------------------------------")
 
 
+def get_token_str_from_token_idx(tokens: Int[Tensor, "seq_len"]) -> List[str]:
+    return __detokenize(tokens.unsqueeze(dim=0))[0]
+
+
 @jaxtyped(typechecker=beartype)
-def display_features_from_tokens(tokens: Int[Tensor, "seq_len"], tokenizer: Tokenizer = tiktoken.get_encoding("gpt2"), feature_extractor: FeatureExtractor = in_quotes_feature) -> None:
+def display_features_from_tokens(tokens: Int[Tensor, "seq_len"], tokenizer: Tokenizer = GPT2_TOKENIZER, feature_extractor: FeatureExtractor = in_quotes_feature_demian) -> None:
     seq_len = tokens.shape[0]
     text,_, quote_features_tensor = feature_extractor(tokens.unsqueeze(dim=0), tokenizer)
     assert len(text) == 1 and len(text[0]) == seq_len
@@ -281,7 +283,7 @@ class ProbeCluster:
         return accuracies
 
     @jaxtyped(typechecker=beartype)
-    def display_probe_predictions(self, text: str, model, device, tokenizer: Tokenizer = tiktoken.get_encoding("gpt2")) -> None:
+    def display_probe_predictions(self, text: str, model, device, tokenizer: Tokenizer = GPT2_TOKENIZER) -> None:
         tokens : Int[Tensor, "seq_len"] = torch.Tensor(tokenizer.encode(text)).to(device).type(torch.int64)
         batched_tokens : Int[Tensor, "batch_size seq_len"] = tokens.unsqueeze(dim=0)
         activations : List[Float[Tensor, "1 seq_len d_model"]]
@@ -320,8 +322,8 @@ def compute_probe_targets_from_training_data(training_data: Int[Tensor, "batch_s
     probe_targets = torch.Tensor(list_probe_targets).float()
     return probe_targets
 
-@jaxtyped(typechecker=beartype)
-def __detokenize(training_data: Int[Tensor, "batch_size block_size"], tokenizer=tiktoken.get_encoding("gpt2")) -> List[List[str]]:
+#@jaxtyped(typechecker=beartype)
+def __detokenize(training_data: Int[Tensor, "batch_size block_size"], tokenizer=GPT2_TOKENIZER) -> List[List[str]]:
     """
     returns list of shape (batch_size, block_size)
     """
