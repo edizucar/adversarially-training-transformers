@@ -39,6 +39,7 @@ import ProbeIntervention
 # default config values designed to train a gpt2 (124M) on OpenWebText
 # I/O
 out_dir = 'out'
+special_out_dir = 'special-out'
 eval_interval = 2000
 log_interval = 1
 eval_iters = 200
@@ -136,6 +137,8 @@ print(f"tokens per iteration will be: {tokens_per_iter:,}")
 
 if master_process:
     os.makedirs(out_dir, exist_ok=True)
+    os.makedirs(special_out_dir, exist_ok=True)
+
 torch.manual_seed(1337 + seed_offset)
 torch.manual_seed(6)
 torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
@@ -374,6 +377,7 @@ def process_probe_prediction_distribution(data: list[tuple[float, dict]], probe_
     # plt.ylabel('Accuracy (0-1)')
 
     # Plotting the histogram
+    plt.figure()
     plt.hist(numbers, bins=10, range=(0, 1), edgecolor='black')
 
     # Adding titles and labels
@@ -381,16 +385,12 @@ def process_probe_prediction_distribution(data: list[tuple[float, dict]], probe_
     plt.xlabel('Accuracy')
     plt.ylabel('Frequency')
     plt.savefig(f"graphs/{wandb_run_name}-probe{probe_num}.png")
+    plt.close()
 
     print("-"*6 + "Probe prediction accuracy distribution" + "-"*6)
     print("Worst Performer: ")
     print(f"acc = {data[0][0]}")
     # 0th item in list has lowest accuracy
-    print("Let's see what is wrong and right!")
-    ProbeIntervention.display_features_from_tokens_and_feature_tensor(
-        data[0][1]["tokens"],
-        data[0][1]["feature_predictions"] == data[0][1]["feature_targets"]
-    )
     ProbeIntervention.display_features_from_tokens_and_feature_tensor(
        data[0][1]["tokens"],
        data[0][1]["feature_predictions"],
@@ -519,8 +519,9 @@ while True:
                 # Add information about probes to checkpoint
                 checkpoint |= probe_cluster.state_dict()
 
-                print(f"saving checkpoint to {out_dir}")
-                torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
+                #print(f"saving checkpoint to {out_dir}")
+                print(f"saving checkpoint to {special_out_dir}")
+                torch.save(checkpoint, os.path.join(special_out_dir, 'ckpt.pt'))
      
 
     # MARS: we can ignore this            
@@ -545,13 +546,23 @@ while True:
         accumulated_adversarial_loss = torch.tensor(0, device=device,dtype=torch.float) 
         # Train probes:
         probe_cluster.loss_backward_probes(activations, probe_targets, scaler)
+        # step the probes
+        probe_cluster.optimiser_step_probes(scaler)
         # Train model: 
-        with torch.inference_mode():
-            probe_losses : List[Float[Tensor, ""]] = probe_cluster.compute_probe_losses(activations, probe_targets)
+        probe_losses : List[Float[Tensor, ""]] = probe_cluster.compute_probe_losses(activations, probe_targets)
         for probe_loss in probe_losses:
             accumulated_adversarial_loss -= probe_loss # negative because we training adversarially
-        weighted_adversarial_loss = lambda_adversarial * accumulated_adversarial_loss
+        dynamic_scale = abs(lambda_adversarial * total_loss.detach() / accumulated_adversarial_loss.detach())
+        weighted_adversarial_loss = dynamic_scale * accumulated_adversarial_loss
+
+        print('iteration: ',iter_num)
+        print('loss components:')
+        print('normal loss:',total_loss)
+        # total_loss *= 0
         total_loss += weighted_adversarial_loss
+        print('adv loss pre lambda: ', accumulated_adversarial_loss)
+        print('adv loss post lambda: ', weighted_adversarial_loss)
+        print('final loss:',total_loss)
         # backward pass, with gradient scaling if training in fp16
         scaler.scale(total_loss).backward()
 
@@ -565,9 +576,8 @@ while True:
     scaler.update()
     # flush the gradients as soon as we can, no need for this memory anymore
     optimizer.zero_grad(set_to_none=True)
+    probe_cluster.zero_grad_probes()
 
-    # step the probes
-    probe_cluster.optimiser_step_probes(scaler)
 
     # timing and logging
     t1 = time.time()

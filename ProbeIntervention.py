@@ -303,11 +303,16 @@ class ProbeCluster:
         probe_losses = self.compute_probe_losses(detached_activations, probe_targets)
         for probe_loss in probe_losses:
             scaler.scale(probe_loss).backward()
+            scaler.update()
 
 
     def optimiser_step_probes(self, scaler: GradScaler):
         for probe_optimiser in self.__probe_optimisers:
             scaler.step(probe_optimiser)
+        self.zero_grad_probes()
+
+    def zero_grad_probes(self):
+        for probe_optimiser in self.__probe_optimisers:
             probe_optimiser.zero_grad(set_to_none=True)
 
     def show_predictions(self, text: List[str], activations: List[Float[Tensor, "seq_len d_model"]]):
