@@ -1,0 +1,2 @@
+https://proceedings.neurips.cc/paper_files/paper/2023/file/d066d21c619d0a78c5b557fa3291a8f4-Paper-Conference.pdf
+https://github.com/EleutherAI/concept-erasure/blob/main/concept_erasure/concept_scrubber.py
