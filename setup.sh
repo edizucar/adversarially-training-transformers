@@ -5,11 +5,6 @@ echo "Installing build-essential..."
 sudo apt update
 sudo apt install -y build-essential
 
-# Step 2: Generate RSA keypair and print the public key
-echo "Generating RSA keypair..."
-ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""
-echo "Public key:"
-cat ~/.ssh/id_rsa.pub
 
 # Step 3: Create the /mars directory
 echo "Creating /mars directory..."
