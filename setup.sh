@@ -7,7 +7,7 @@ sudo apt install -y build-essential
 
 # Step 2: Generate RSA keypair and print the public key
 echo "Generating RSA keypair..."
-ssh-keygen -t rsa -b 4096 -C "your_email@example.com" -f ~/.ssh/id_rsa -N ""
+ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""
 echo "Public key:"
 cat ~/.ssh/id_rsa.pub
 
@@ -36,7 +36,7 @@ wget https://huggingface.co/datasets/roneneldan/TinyStories/resolve/main/TinySto
 
 # Step 8: Untar the file and remove the tar file
 echo "Extracting TinyStories_all_data.tar.gz..."
-tar -xzvf TinyStories_all_data/TinyStories_all_data.tar.gz -C TinyStories_all_data
+tar -xvf TinyStories_all_data/TinyStories_all_data.tar.gz -C TinyStories_all_data
 rm TinyStories_all_data/TinyStories_all_data.tar.gz
 
 # Step 9: Make a Python3 virtual environment and activate it
