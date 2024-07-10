@@ -21,6 +21,8 @@ cd /mars
 
 # Step 5: Git clone the repository
 echo "Cloning the repository..."
+git config --global user.name "Ediz Ucar"
+git config --global user.name "edizucar@hotmail.com"
 git clone git@github.com:edizucar/adversarially-training-transformers.git
 
 # Step 5.5: Navigate into the cloned repository
