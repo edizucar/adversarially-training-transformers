@@ -1,0 +1,10 @@
+torch
+numpy==1.26.4
+transformers
+datasets
+tiktoken
+wandb
+tqdm
+jaxtyping
+beartype
+matplotlib
