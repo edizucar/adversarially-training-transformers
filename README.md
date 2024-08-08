@@ -12,7 +12,7 @@ Because the code is so simple, it is very easy to hack to your needs, train new 
 ## install
 
 ```
-pip install torch numpy transformers datasets tiktoken wandb tqdm jaxtyping beartype matplotlib
+pip install torch numpy==1.26.4 transformers datasets tiktoken wandb tqdm jaxtyping beartype matplotlib
 ```
 
 Dependencies:
