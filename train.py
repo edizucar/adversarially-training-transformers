@@ -52,7 +52,7 @@ wandb_log = True # disabled by default
 wandb_project = 'owt'
 wandb_run_name = 'gpt2' # 'run' + str(time.time())
 # data
-dataset = 'openwebtext'
+dataset = 'tiny_stories'
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
 batch_size = 12 # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024
@@ -214,7 +214,7 @@ elif init_from == 'resume':
     for k in ['n_layer', 'n_head', 'n_embd', 'block_size', 'bias', 'vocab_size']:
         model_args[k] = checkpoint_model_args[k]
     # create the model
-    gptconf = GPTConfig(**model_args) # type: ignore
+    gptconf = GPTConfig(**model_args)
     model = GPT(gptconf)
     state_dict = checkpoint['model']
     # fix the keys of the state dictionary :(
@@ -228,8 +228,22 @@ elif init_from == 'resume':
     iter_num = checkpoint['iter_num']
     best_val_loss = checkpoint['best_val_loss']
 
-
-    probe_cluster = ProbeIntervention.ProbeCluster.load_from_checkpoint(checkpoint,lr=probe_learning_rate, device=device)
+    # Initialize probe cluster
+    probe_cluster = ProbeIntervention.ProbeCluster(
+        number_of_probes=2*n_layer, 
+        probe_type=probe_type, 
+        input_dim=n_embd, 
+        output_dim=1, 
+        lr=probe_learning_rate, 
+        device=device
+    )
+    
+    # Try to load probe weights if they exist in checkpoint
+    try:
+        probe_cluster.load_from_checkpoint(checkpoint, lr=probe_learning_rate, device=device)
+        print("Successfully loaded probe weights from checkpoint")
+    except (KeyError, AttributeError) as e:
+        print("No probe weights found in checkpoint, initializing new probes")
 
 elif init_from.startswith('gpt2'):
     print(f"Initializing from OpenAI GPT-2 weights: {init_from}")

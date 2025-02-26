@@ -1,9 +1,9 @@
 # train a miniature character-level shakespeare model
 # good for debugging and playing on macbooks and such
 
-out_dir = 'adversarial-500-model-300x-probe'
+out_dir = 'backup-checkpoint-24-02'
 special_out_dir = 'delete_me'
-end_itr = 4_500
+end_itr = 4_500 # true itr = end_itr - 4000 bc the model starts at 4000 if youre starting from the checkpoint
 eval_interval = end_itr # keep frequent because we'll overfit
 eval_iters = 50
 log_interval = 250 # don't print too too often
@@ -14,7 +14,6 @@ never_save_checkpoint = False
 
 wandb_log = False # override via command line if you like
 wandb_project = 'tiny-stories-train'
-
 
 
 dataset = 'tiny_stories'
