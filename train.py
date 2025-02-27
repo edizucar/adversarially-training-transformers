@@ -21,7 +21,7 @@ from src.config import TrainingConfig
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a GPT model')
-    parser.add_argument('config', type=str, help='Path to config file (YAML or Python)')
+    parser.add_argument('config', type=str, nargs='?', help='Path to config file (YAML or Python)')
     parser.add_argument('--resume', action='store_true', help='Resume training from checkpoint')
     parser.add_argument('--eval-only', action='store_true', help='Run evaluation only')
     parser.add_argument('--no-wandb', action='store_true', help='Disable wandb logging')
@@ -346,12 +346,32 @@ def process_probe_prediction_distribution(data, probe_num, display=True):
 def main():
     args = parse_args()
     
-    # Load configuration
-    if args.config.endswith('.yaml'):
-        config = TrainingConfig.from_yaml(args.config)
+    if args.config:
+        # Load configuration
+        if args.config.endswith('.yaml'):
+            config = TrainingConfig.from_yaml(args.config)
+        else:
+            config = TrainingConfig.from_py(args.config)
     else:
-        config = TrainingConfig.from_py(args.config)
-        
+        config = TrainingConfig()
+        config.dataset = "tiny_stories"
+        config.n_layer = 6
+        config.n_head = 6
+        config.n_embd = 384
+        config.batch_size = 64
+        config.block_size = 256
+        config.dropout = 0.2
+        config.learning_rate = 1e-3
+        config.min_lr = 1e-4
+        config.max_iters = 5000
+        config.lr_decay_iters = 5000
+        config.init_from = 'scratch'
+        config.probe_type = 'linear'
+        config.probe_learning_rate = 1e-3
+        config.source_dir = "checkpoints/default"
+        config.dest_dir = "checkpoints/default"
+        config.lambda_adversarial = 1e-3
+
     # Override config with command line args
     if args.resume:
         config.init_from = 'resume'
