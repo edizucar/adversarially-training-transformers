@@ -55,3 +55,7 @@ Contains the configuration from the old `train_copy.py` script.
 
 ### `py_configs`
 Directory containing old Python configs used to run the old `train_copy.py` script.
+
+# Credits
+
+This codebase was built off of the [nanoGPT](https://github.com/karpathy/nanoGPT) implementation, and was written by Michael Ivanitskiy, Ediz Ucar, Demian Till, George Ingebretsen, and Arun Jose.
