@@ -12,3 +12,4 @@ input.txt
 *.ckpt
 wandb/
 graphs/*.png
+checkpoints/

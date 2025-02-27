@@ -1,0 +1,60 @@
+# Output configuration
+source_dir: 'checkpoints/backup-checkpoint-24-02'
+dest_dir: 'checkpoints/old_tiny_stories_adv'
+max_iters: 600000
+eval_interval: 2000
+eval_iters: 200
+log_interval: 1
+eval_only: false
+
+# Checkpointing
+always_save_checkpoint: true
+never_save_checkpoint: false
+
+# Wandb logging
+wandb_log: false
+wandb_project: 'owt'
+wandb_run_name: 'gpt2'
+
+# Dataset config
+dataset: 'openwebtext'
+gradient_accumulation_steps: 40  # 5 * 8
+batch_size: 12
+block_size: 1024
+
+# Model architecture
+n_layer: 12
+n_head: 12
+n_embd: 768
+dropout: 0.0
+bias: false
+
+# Optimizer
+learning_rate: 6e-4
+weight_decay: 1e-1
+decay_lr: true
+lr_decay_iters: 600000
+min_lr: 6e-5
+beta1: 0.9
+beta2: 0.95
+grad_clip: 1.0
+warmup_iters: 2000
+
+# System
+device: 'cuda'
+compile: true
+dtype: 'bfloat16'
+backend: 'nccl'
+
+# Training components
+train_probes: true
+train_model: true
+
+# Probe config
+probe_type: 'linear'
+probe_learning_rate: 1e-3
+lambda_adversarial: 0
+train_adversarially: true
+
+# Initialization
+init_from: 'scratch'  # 'scratch' or 'resume' or 'gpt2*'
