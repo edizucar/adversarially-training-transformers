@@ -358,12 +358,13 @@ def main():
         config.n_layer = 6
         config.n_head = 6
         config.n_embd = 384
-        config.batch_size = 64
+        config.batch_size = 128
         config.block_size = 256
-        config.dropout = 0.2
+        config.dropout = 0.0
         config.learning_rate = 1e-3
         config.min_lr = 1e-4
         config.max_iters = 5000
+        config.eval_interval = 1000
         config.lr_decay_iters = 5000
         config.init_from = 'scratch'
         config.probe_type = 'linear'

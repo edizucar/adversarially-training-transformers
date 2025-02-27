@@ -8,3 +8,4 @@ tqdm
 jaxtyping
 beartype
 matplotlib
+typeguard

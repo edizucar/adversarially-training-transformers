@@ -1,5 +1,31 @@
 # How to Run
 
+First install the dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Now, if you want to run this from scratch, run the following command to prepare the dataset.
+
+```bash
+python data/<dataset>/prepare.py
+```
+
+Then (or if you have the dataset already prepared), run the training script with the following command:
+
+```bash
+python train.py
+```
+
+If you already have a checkpoint, you can resume training with the following command:
+
+```bash
+python train.py --resume
+```
+
+If you want to only train the probes, run the following command:
+
 ```bash
 python train.py config/<config>.yaml
 ```
@@ -51,6 +77,9 @@ This is the default configuration for adversarial training using linear probes o
 - `init_from`: How to initialize the model ('resume', 'scratch', 'gpt2', 'gpt2_small', etc.)
 
 ### `old.yaml`
+Contains the configuration from the old `train.py` script.
+
+### `old_copy.yaml`
 Contains the configuration from the old `train_copy.py` script.
 
 ### `py_configs`
