@@ -355,17 +355,17 @@ def main():
     else:
         config = TrainingConfig()
         config.dataset = "tiny_stories"
-        config.n_layer = 6
-        config.n_head = 6
-        config.n_embd = 384
+        config.n_layer = 12
+        config.n_head = 12
+        config.n_embd = 768
         config.batch_size = 128
-        config.block_size = 256
+        config.block_size = 512
         config.dropout = 0.0
         config.learning_rate = 1e-3
         config.min_lr = 1e-4
-        config.max_iters = 5000
+        config.max_iters = 6000
         config.eval_interval = 1000
-        config.lr_decay_iters = 5000
+        config.lr_decay_iters = 6000
         config.init_from = 'scratch'
         config.probe_type = 'linear'
         config.probe_learning_rate = 1e-3
