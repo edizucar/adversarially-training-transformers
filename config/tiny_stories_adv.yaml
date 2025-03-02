@@ -2,7 +2,7 @@
 source_dir: 'checkpoints/backup-checkpoint-24-02'
 dest_dir: 'checkpoints/tiny_stories_adv'
 max_iters: 4500
-eval_interval: 4500
+eval_interval: 500
 eval_iters: 50
 log_interval: 250
 
@@ -11,7 +11,7 @@ always_save_checkpoint: false
 never_save_checkpoint: false
 
 # Wandb logging
-wandb_log: false
+wandb_log: true
 wandb_project: 'tiny-stories-train'
 wandb_run_name: 'mini-gpt-adversarial'
 
@@ -33,7 +33,7 @@ decay_lr: true
 lr_decay_iters: 4500
 min_lr: 1e-4
 beta2: 0.99
-warmup_iters: 100
+warmup_iters: 0 # skip warmup when not training the model
 
 # Training components
 train_probes: true

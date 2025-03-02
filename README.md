@@ -24,7 +24,7 @@ If you already have a checkpoint, you can resume training with the following com
 python train.py --resume
 ```
 
-If you want to only train the probes, run the following command:
+If you want to only train the probes against a pre-trained model (you will need to have a checkpoint for this), run the following command:
 
 ```bash
 python train.py config/<config>.yaml

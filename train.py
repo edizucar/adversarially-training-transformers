@@ -40,7 +40,8 @@ def setup_distributed(config):
     ddp_local_rank = int(os.environ['LOCAL_RANK'])
     ddp_world_size = int(os.environ['WORLD_SIZE'])
     device = f'cuda:{ddp_local_rank}'
-    master_process = ddp_rank == 0
+    # master_process = ddp_rank == 0
+    master_process = True
     seed_offset = ddp_rank
     
     # Set CUDA device
@@ -140,8 +141,12 @@ def init_model(config, meta_vocab_size, device):
                 state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
                 
         model.load_state_dict(state_dict)
-        iter_num = checkpoint['iter_num']
-        best_val_loss = checkpoint['best_val_loss']
+        # Only use checkpoint iter_num if we're actually training the model
+        if config.train_model:
+            iter_num = checkpoint['iter_num']
+            best_val_loss = checkpoint['best_val_loss']
+        else:
+            print("Not training model, starting iteration count from 0")
         
     elif config.init_from.startswith('gpt2'):
         print(f"Initializing from OpenAI GPT-2 weights: {config.init_from}")
@@ -172,7 +177,7 @@ def init_probe_cluster(config, checkpoint=None):
         lr=config.probe_learning_rate,
         device=config.device
     )
-    
+
     # Load probe weights if resuming
     if checkpoint is not None:
         try:
@@ -180,7 +185,7 @@ def init_probe_cluster(config, checkpoint=None):
             print("Successfully loaded probe weights from checkpoint")
         except (KeyError, AttributeError) as e:
             print("No probe weights found in checkpoint, initializing new probes")
-            
+
     return probe_cluster
 
 def get_lr_scheduler(config):
@@ -189,16 +194,17 @@ def get_lr_scheduler(config):
         # Linear warmup
         if iter_num < config.warmup_iters:
             return config.learning_rate * iter_num / config.warmup_iters
-            
+
         # Min learning rate after decay period
         if iter_num > config.lr_decay_iters:
             return config.min_lr
-            
+
         # Cosine decay
         decay_ratio = (iter_num - config.warmup_iters) / (config.lr_decay_iters - config.warmup_iters)
         assert 0 <= decay_ratio <= 1
         coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
-        return config.min_lr + coeff * (config.learning_rate - config.min_lr)
+        lr = config.min_lr + coeff * (config.learning_rate - config.min_lr)
+        return lr
         
     return lr_scheduler
 
@@ -485,13 +491,32 @@ def main():
     while True:
         # Set learning rate for this iteration
         lr = lr_scheduler(iter_num) if config.decay_lr else config.learning_rate
+        if config.train_model and config.decay_lr:
+            # Only use scheduler if we're actually training the model
+            lr = lr_scheduler(iter_num) 
+        else:
+            # Otherwise just use a fixed value for logging purposes
+            lr = config.learning_rate if config.train_model else 0.0
+        
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
         
         # Evaluate and checkpoint
+        # Evaluate and checkpoint
         if iter_num % config.eval_interval == 0 and config.master_process:
             losses = estimate_loss(model, config, ctx, get_batch_bound) if config.train_model else {"train": 10.0, "val": 10.0}
             print(f"Step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+
+            # Prepare a single log_dict for wandb
+            if config.wandb_log:
+                log_dict = {
+                    "iteration": iter_num,
+                    "train/model_loss": losses['train'],
+                    "val/model_loss": losses['val'],
+                    "model_lr": lr,
+                    "probe_lr": config.probe_learning_rate,
+                    "mfu": running_mfu * 100  # convert to percentage
+                }
 
             # Add probe evaluation
             if config.train_probes:
@@ -504,24 +529,15 @@ def main():
                             layer = i // 2
                             print(f"{split} probe {i} ({probe_type}-{layer}) {stat}: {probe_eval_stats[split][stat][i]:.4f}")
                             
-                # Add probe stats to wandb logging
+                # Add probe stats to wandb log_dict
                 if config.wandb_log:
-                    probe_log_dict = {}
                     for split in probe_eval_stats:
                         for stat in probe_eval_stats[split]:
                             for i in range(probe_cluster.get_num_probes()):
-                                probe_log_dict[f"{split}/probe-{stat}-{'attn' if i%2==0 else 'MLP'}-layer-{i//2}"] = probe_eval_stats[split][stat][i] 
-                    wandb.log(log_dict | probe_log_dict)
+                                log_dict[f"{split}/probe-{stat}-{'attn' if i%2==0 else 'MLP'}-layer-{i//2}"] = probe_eval_stats[split][stat][i]
             
-            # Log to wandb
+            # Log to wandb (only once)
             if config.wandb_log:
-                log_dict = {
-                    "iteration": iter_num,
-                    "train/model_loss": losses['train'],
-                    "val/model_loss": losses['val'],
-                    "lr": lr,
-                    "mfu": running_mfu * 100  # convert to percentage
-                }
                 wandb.log(log_dict)
             
             # Save checkpoint if needed
