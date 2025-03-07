@@ -1,0 +1,15 @@
+program: train_sweep.py
+method: grid
+command:
+  - ${env}
+  - python3
+  - ${program}
+  - config/sweep/sweep_tiny_stories_adv.yaml
+  - ${args}
+parameters:
+  lambda_adversarial:
+    values: [0.01, 0.05, 0.1, 1.0]
+  gradient_accumulation_steps:
+    values: [1, 10, 30, 100]
+  max_iters:
+    values: [10, 100, 300, 1000, 3000]

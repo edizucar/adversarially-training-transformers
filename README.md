@@ -45,7 +45,7 @@ This is the default configuration for adversarial training using linear probes o
 
 #### Dataset Configuration
 - `dataset`: Training dataset ('tiny_stories')
-- `gradient_accumulation_steps`: Number of steps to accumulate gradients
+- `gradient_accumulation_steps`: Number of steps to accumulate gradients (reffered to as phi in the paper)
 - `batch_size`: Number of samples per batch
 - `block_size`: Context length for sequence modeling
 
@@ -70,7 +70,7 @@ This is the default configuration for adversarial training using linear probes o
 #### Probe Configuration
 - `probe_type`: Type of probe ('linear', 'nonlinear')
 - `probe_learning_rate`: Learning rate for probe training
-- `lambda_adversarial`: Weight for adversarial loss term
+- `lambda_adversarial`: Weight for adversarial loss term (lambda in the paper)
 - `train_adversarially`: Whether to use adversarial training
 
 #### Initialization
