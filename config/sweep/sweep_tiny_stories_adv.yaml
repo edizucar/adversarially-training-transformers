@@ -1,0 +1,49 @@
+# Output configuration
+source_dir: 'checkpoints/backup-checkpoint-24-02'
+dest_dir: 'checkpoints/sweep_tiny_stories_adv'
+eval_interval: 10
+eval_iters: 50
+log_interval: 10
+
+# Checkpointing
+always_save_checkpoint: true
+never_save_checkpoint: false
+
+# Wandb logging
+wandb_log: true
+wandb_project: 'sweep-tiny-stories-train'
+wandb_run_name: ''
+
+# Dataset config
+dataset: 'tiny_stories'
+batch_size: 64
+block_size: 256
+
+# Model architecture
+n_layer: 6
+n_head: 6
+n_embd: 384
+dropout: 0.2
+
+# Optimizer
+learning_rate: 1e-3
+decay_lr: true
+lr_decay_iters: 4500
+min_lr: 1e-4
+beta2: 0.99
+warmup_iters: 0 # skip warmup when not training the model
+
+# Training components
+train_probes: true
+train_model: true
+
+# Probe config
+probe_type: 'linear'
+probe_learning_rate: 1e-3
+train_adversarially: true
+
+# Initialization
+init_from: 'resume'
+
+# Explicitly set max iterations for debugging
+max_iters: 300  # This should be explicitly set to 300 for your test
