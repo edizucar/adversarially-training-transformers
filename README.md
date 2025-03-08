@@ -1,9 +1,9 @@
 # How to Run
 
-First install the dependencies:
+First install the dependencies and optionally download a pre-trained checkpoint:
 
 ```bash
-pip install -r requirements.txt
+bash setup.sh [--get-checkpoint]
 ```
 
 Now, if you want to run this from scratch, run the following command to prepare the dataset.
