@@ -5,6 +5,9 @@ import numpy as np
 import tiktoken
 from datasets import load_dataset
 
+# Get the directory where the script is located
+script_dir = os.path.dirname(os.path.abspath(__file__))
+
 # number of workers in .map() call
 num_proc = 8
 num_proc_load_dataset = num_proc
@@ -39,13 +42,14 @@ if __name__ == '__main__':
     # Save metadata (vocab size)
     import pickle
     meta = {'vocab_size': enc.n_vocab}
-    with open('meta.pkl', 'wb') as f:
+    meta_path = os.path.join(script_dir, 'meta.pkl')
+    with open(meta_path, 'wb') as f:
         pickle.dump(meta, f)
     
     # Concatenate all ids into binary files
     for split, dset in tokenized.items():
         arr_len = np.sum(dset['len'], dtype=np.uint64)
-        filename = f'{split}.bin'
+        filename = os.path.join(script_dir, f'{split}.bin')
         dtype = np.uint16  # enc.max_token_value == 50256 is < 2**16
         arr = np.memmap(filename, dtype=dtype, mode='w+', shape=(arr_len,))
         
@@ -60,6 +64,6 @@ if __name__ == '__main__':
             idx += len(arr_batch)
         arr.flush()
     
-    print(f"Processing complete. Files saved to data/tiny_stories")
-    print(f"Train size: {os.path.getsize('train.bin') / (1024 * 1024):.2f} MB")
-    print(f"Val size: {os.path.getsize('val.bin') / (1024 * 1024):.2f} MB")
+    print(f"Processing complete. Files saved to {script_dir}")
+    print(f"Train size: {os.path.getsize(os.path.join(script_dir, 'train.bin')) / (1024 * 1024):.2f} MB")
+    print(f"Val size: {os.path.getsize(os.path.join(script_dir, 'val.bin')) / (1024 * 1024):.2f} MB")
