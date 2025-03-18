@@ -582,11 +582,20 @@ def main():
             if config.train_probes:
                 accumulated_adversarial_loss = torch.tensor(0, device=config.device, dtype=torch.float)
                 
-                # Train probes
-                probe_cluster.loss_backward_probes(activations, probe_targets, scaler)
-                probe_cluster.optimiser_step_probes(scaler)
+                # Train probes multiple times based on phi parameter
+                for _ in range(config.phi_probe_steps_per_model_update):
+                    # Get fresh batch for each probe update if phi > 1
+                    if _ > 0:
+                        X, Y, probe_targets = get_batch_bound('train')
+                        with ctx:
+                            _, _, activations = model(X, Y)
+                    
+                    # Train probes
+                    probe_cluster.loss_backward_probes(activations, probe_targets, scaler)
+                    probe_cluster.optimiser_step_probes(scaler)
+                    probe_cluster.zero_grad_probes()
                 
-                # Adversarial training
+                # For adversarial training, use the last batch's activations
                 if config.train_adversarially:
                     probe_losses = probe_cluster.compute_probe_losses(activations, probe_targets)
                     for probe_loss in probe_losses:
@@ -613,9 +622,6 @@ def main():
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad(set_to_none=True)
-        
-        if config.train_probes:
-            probe_cluster.zero_grad_probes()
         
         # Timing and logging
         t1 = time.time()
