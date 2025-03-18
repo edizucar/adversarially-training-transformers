@@ -314,7 +314,7 @@ class ProbeCluster:
                 # For the last loss, no need to retain graph
                 scaler.scale(probe_loss).backward()
         
-        scaler.update()
+        # scaler.update()
 
     def optimiser_step_probes(self, scaler: GradScaler):
         for probe_optimiser in self.__probe_optimisers:

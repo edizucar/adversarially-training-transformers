@@ -18,8 +18,10 @@ wandb_run_name: 'mini-gpt-adversarial'
 # Dataset config
 dataset: 'tiny_stories'
 compile: true
-gradient_accumulation_steps: 4
-batch_size: 256
+gradient_accumulation_steps: 1
+use_gradient_checkpointing: false
+auto_tune_batch_size: false
+batch_size: 128
 block_size: 256
 dtype: 'bfloat16'
 

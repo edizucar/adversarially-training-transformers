@@ -25,6 +25,8 @@ def parse_args():
     parser.add_argument('--resume', action='store_true', help='Resume training from checkpoint')
     parser.add_argument('--eval-only', action='store_true', help='Run evaluation only')
     parser.add_argument('--no-wandb', action='store_true', help='Disable wandb logging')
+    parser.add_argument('--show-final-eval-on-stop', action='store_true', 
+                        help='Show final evaluation when stopping with Ctrl+C')
     return parser.parse_args()
 
 def setup_distributed(config):
@@ -558,6 +560,8 @@ def main():
         config.eval_only = True
     if args.no_wandb:
         config.wandb_log = False
+    if args.show_final_eval_on_stop:
+        config.show_final_eval_on_stop = True
     
     # Set up directories
     if config.master_process:
@@ -605,13 +609,11 @@ def main():
         checkpoint = torch.load(ckpt_path, map_location=config.device)
     probe_cluster = init_probe_cluster(config, checkpoint)
 
-    # Add this right after probe_cluster initialization
-    if config.auto_tune_batch_size and torch.cuda.is_available():
-        config.batch_size = find_optimal_batch_size(model, config, ctx, get_batch_bound, probe_cluster)
+    # if config.auto_tune_batch_size and torch.cuda.is_available():
+    #     config.batch_size = find_optimal_batch_size(model, config, ctx, get_batch_bound, probe_cluster)
     
-    # Add after the batch size auto-tuning
-    if hasattr(config, 'original_batch_size') and config.batch_size != config.original_batch_size:
-        config.gradient_accumulation_steps = adaptive_accumulation_steps(config)
+    # if hasattr(config, 'original_batch_size') and config.batch_size != config.original_batch_size:
+    #     config.gradient_accumulation_steps = adaptive_accumulation_steps(config)
     
     # Initialize optimizer
     optimizer = model.configure_optimizers(
@@ -787,7 +789,7 @@ def main():
                         probe_losses = probe_cluster.compute_probe_losses(activations, probe_targets)
                         
                         # Sum negative probe losses (adversarial objective)
-                        accumulated_adversarial_loss = torch.zeros(1, device=config.device, dtype=torch.float)
+                        accumulated_adversarial_loss = torch.zeros_like(total_loss, device=config.device, dtype=torch.float)
                         for probe_loss in probe_losses:
                             accumulated_adversarial_loss -= probe_loss
                         
@@ -829,11 +831,11 @@ def main():
 
                 # Update performance monitor
                 tokens_per_sec = config.batch_size * config.block_size / dt
-                performance_monitor.update(iter_num, lossf, mfu, config.batch_size, tokens_per_sec)
+                # performance_monitor.update(iter_num, lossf, mfu, config.batch_size, tokens_per_sec)
                 
                 # Print stats every 10 iterations
-                if iter_num % (config.log_interval * 10) == 0:
-                    performance_monitor.print_stats()
+                # if iter_num % (config.log_interval * 10) == 0:
+                #     performance_monitor.print_stats()
                 
             print(f"Iter {iter_num}, loss {lossf:.4f}, lr {lr}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
         
@@ -845,36 +847,39 @@ def main():
         if iter_num > config.max_iters or stop_requested:
             print("Final iteration reached!")
             print("\nDisplay final information:")
-            
-            # Display final probe stats
-            if config.train_probes:
-                # Evaluate probes with predictions display
-                probe_eval_stats = estimate_probe_loss(
-                    model, probe_cluster, config, ctx, get_batch_bound, 
-                    display_probe_predictions=True
-                )
-                
-                # Sample and display probe accuracy distributions
-                table = ""
-                for probe_num in range(config.n_layer * 2):
-                    data, acc = probe_accuracy_sampling(
-                        model, probe_cluster, config, ctx, get_batch_bound,
-                        probe_num=probe_num, num_batches=20
+
+            if stop_requested and not hasattr(config, 'show_final_eval_on_stop'):
+                print("\nSkipping final evaluation due to interrupt and --show-final-eval-on-stop flag not set")
+            else:
+                # Display final probe stats
+                if config.train_probes:
+                    # Evaluate probes with predictions display
+                    probe_eval_stats = estimate_probe_loss(
+                        model, probe_cluster, config, ctx, get_batch_bound, 
+                        display_probe_predictions=True
                     )
-                    table += f"Probe {probe_num}: {acc:.4f}\n"
                     
-                    # Process and display last probe in full detail
-                    is_last_probe = (probe_num == config.n_layer * 2 - 1)
-                    process_probe_prediction_distribution(data, probe_num=probe_num, display=is_last_probe)
-                
-                print("Probe Accuracy Summary:")
-                print(table)
+                    # Sample and display probe accuracy distributions
+                    table = ""
+                    for probe_num in range(config.n_layer * 2):
+                        data, acc = probe_accuracy_sampling(
+                            model, probe_cluster, config, ctx, get_batch_bound,
+                            probe_num=probe_num, num_batches=20
+                        )
+                        table += f"Probe {probe_num}: {acc:.4f}\n"
+                        
+                        # Process and display last probe in full detail
+                        is_last_probe = (probe_num == config.n_layer * 2 - 1)
+                        process_probe_prediction_distribution(data, probe_num=probe_num, display=is_last_probe)
+                    
+                    print("Probe Accuracy Summary:")
+                    print(table)
             
             print("Training complete!")
             break
         
         # Update performance monitor
-        performance_monitor.update(iter_num, transformer_loss.item(), running_mfu, config.batch_size, config.tokens_per_iter / dt)
+        # performance_monitor.update(iter_num, transformer_loss.item(), running_mfu, config.batch_size, config.tokens_per_iter / dt)
     
     # Clean up
     if config.is_distributed:
