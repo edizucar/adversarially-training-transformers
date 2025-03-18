@@ -66,6 +66,8 @@ class TrainingConfig:
     compile: bool = True
     dtype: str = 'auto'  # 'auto', 'float32', 'bfloat16', 'float16'
     backend: str = 'nccl'  # for DDP
+    use_gradient_checkpointing: bool = False  # Set to True to enable gradient checkpointing
+    auto_tune_batch_size: bool = False
 
     # Distributed training attributes (with defaults)
     is_distributed: bool = False

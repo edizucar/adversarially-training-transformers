@@ -297,14 +297,24 @@ class ProbeCluster:
             display_features_from_tokens_and_feature_tensor(tokens, prediction.squeeze(dim=0))
             print("\n")
 
-    def loss_backward_probes(self, activations : List[Float[Tensor, "batch_size seq d_model"]], probe_targets, scaler : GradScaler):
+    def loss_backward_probes(self, activations : List[Float[Tensor, "batch_size seq d_model"]], probe_targets, scaler: GradScaler):
+        """Optimized version with less CPU-GPU synchronization"""
         self.set_train_mode()
         detached_activations = [activation.detach() for activation in activations]
+        
+        # Compute all probe losses in one go
         probe_losses = self.compute_probe_losses(detached_activations, probe_targets)
-        for probe_loss in probe_losses:
-            scaler.scale(probe_loss).backward()
-            scaler.update()
-
+        
+        # Scale and backward all losses together if possible
+        for i, probe_loss in enumerate(probe_losses):
+            if i < len(probe_losses) - 1:
+                # For all but the last loss, retain graph
+                scaler.scale(probe_loss).backward(retain_graph=True)
+            else:
+                # For the last loss, no need to retain graph
+                scaler.scale(probe_loss).backward()
+        
+        scaler.update()
 
     def optimiser_step_probes(self, scaler: GradScaler):
         for probe_optimiser in self.__probe_optimisers:

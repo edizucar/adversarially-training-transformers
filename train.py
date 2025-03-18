@@ -55,17 +55,39 @@ def setup_distributed(config):
     return True, ddp_rank, ddp_local_rank, ddp_world_size, master_process, seed_offset, grad_accum_steps, device
 
 def setup_pytorch(config, device_type):
-    """Set up PyTorch settings"""
+    """Improved setup with better mixed precision defaults"""
     torch.manual_seed(1337 + config.seed_offset)
+    
+    # Enable TF32 precision for better performance on Ampere+ GPUs
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
     
+    # Optimize memory allocation
+    if device_type == 'cuda':
+        # Use asynchronous cuda operations
+        torch.cuda.set_device(config.local_rank)
+        torch.cuda.empty_cache()
+        
+        # Set more aggressive memory allocation
+        if hasattr(torch.cuda, 'memory_stats'):
+            torch.cuda.memory_reserved = lambda device: torch.cuda.memory_stats(device)['reserved_bytes.all']
+            torch.cuda.max_memory_reserved = lambda device: torch.cuda.memory_stats(device)['reserved_bytes.all.peak']
+    
     # Setup dtype and autocast context
-    ptdtype = {
-        'float32': torch.float32, 
-        'bfloat16': torch.bfloat16, 
-        'float16': torch.float16
-    }[config.dtype]
+    if config.dtype == 'auto':
+        if device_type == 'cuda':
+            if torch.cuda.is_bf16_supported():
+                ptdtype = torch.bfloat16
+            else:
+                ptdtype = torch.float16
+        else:
+            ptdtype = torch.float32
+    else:
+        ptdtype = {
+            'float32': torch.float32, 
+            'bfloat16': torch.bfloat16, 
+            'float16': torch.float16
+        }[config.dtype]
     
     ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
     return ctx, ptdtype
@@ -95,6 +117,49 @@ def get_batch(split, train_data, val_data, config, device, device_type):
     else:
         x, y = x.to(device), y.to(device)
         probe_targets = probe_targets.to(device)
+        
+    return x, y, probe_targets
+
+def get_batch_prefetched(split, train_data, val_data, config, device, device_type):
+    """Prefetch and preprocess batches using CUDA streams"""
+    data = train_data if split == 'train' else val_data
+    
+    # Create two streams for asynchronous data transfers
+    if device_type == 'cuda':
+        stream1 = torch.cuda.Stream()
+        stream2 = torch.cuda.Stream()
+    
+    # Prefetch next batch while current batch is processing
+    offsets = torch.randint(len(data) - config.block_size, (config.batch_size,))
+    
+    # Prepare input sequence
+    with torch.cuda.stream(stream1) if device_type == 'cuda' else nullcontext():
+        x = torch.stack([torch.from_numpy((data[offset:offset+config.block_size]).astype(np.int64)) 
+                        for offset in offsets])
+        if device_type == 'cuda':
+            x = x.pin_memory().to(device, non_blocking=True)
+        else:
+            x = x.to(device)
+    
+    # Prepare target sequence in parallel
+    with torch.cuda.stream(stream2) if device_type == 'cuda' else nullcontext():
+        y = torch.stack([torch.from_numpy((data[offset+1:offset+1+config.block_size]).astype(np.int64)) 
+                        for offset in offsets])
+        if device_type == 'cuda':
+            y = y.pin_memory().to(device, non_blocking=True)
+        else:
+            y = y.to(device)
+    
+    # Generate probe targets (could be done on CPU in parallel)
+    _, _, probe_targets = ProbeIntervention.in_quotes_feature_demian(x)
+    if device_type == 'cuda':
+        probe_targets = probe_targets.pin_memory().to(device, non_blocking=True)
+    else:
+        probe_targets = probe_targets.to(device)
+    
+    # Synchronize streams before returning
+    if device_type == 'cuda':
+        torch.cuda.synchronize()
         
     return x, y, probe_targets
 
@@ -354,6 +419,108 @@ def process_probe_prediction_distribution(data, probe_num, display=True):
     )
     print("\n")
 
+def find_optimal_batch_size(model, config, ctx, get_batch_fn, max_batch_size=512, step=32):
+    """Find the largest batch size that fits in memory"""
+    print("Finding optimal batch size...")
+    
+    original_batch_size = config.batch_size
+    device = config.device
+    
+    # Try increasingly larger batch sizes
+    for batch_size in range(original_batch_size, max_batch_size + step, step):
+        config.batch_size = batch_size
+        try:
+            # Clear cache to get accurate measurement
+            if 'cuda' in device:
+                torch.cuda.empty_cache()
+            
+            # Try to process a batch
+            X, Y, probe_targets = get_batch_fn('train')
+            with ctx:
+                logits, loss, activations = model(X, Y)
+                if config.train_adversarially:
+                    # Also test probe backward pass
+                    probe_losses = probe_cluster.compute_probe_losses(activations, probe_targets)
+                    adversarial_loss = -sum(probe_losses)
+                    total_loss = loss + adversarial_loss
+                    total_loss.backward()
+
+                    # Clean up
+                    model.zero_grad(set_to_none=True)
+                    if hasattr(probe_cluster, 'zero_grad_probes'):
+                        probe_cluster.zero_grad_probes()
+            
+            # If successful, continue to the next batch size
+            print(f"Batch size {batch_size} works!")
+            
+            # Free memory
+            del X, Y, probe_targets, logits, loss, activations
+            if 'cuda' in device:
+                torch.cuda.empty_cache()
+                
+        except RuntimeError as e:
+            if "CUDA out of memory" in str(e):
+                # Found the limit, revert to the last working batch size
+                config.batch_size = max(original_batch_size, batch_size - step)
+                print(f"CUDA OOM at batch size {batch_size}, reverting to {config.batch_size}")
+                break
+            else:
+                raise
+    
+    print(f"Optimal batch size: {config.batch_size}")
+    return config.batch_size
+
+def adaptive_accumulation_steps(config):
+    """Adjust gradient accumulation steps based on batch size"""
+    if not hasattr(config, 'original_batch_size') or config.original_batch_size == config.batch_size:
+        return config.gradient_accumulation_steps
+        
+    # Determine base computational budget (batch_size * gradient_accumulation_steps)
+    computational_budget = config.original_batch_size * config.gradient_accumulation_steps
+    
+    # Adjust if batch size was auto-tuned
+    new_steps = max(1, int(computational_budget / config.batch_size))
+    print(f"Adjusted gradient accumulation steps from {config.gradient_accumulation_steps} to {new_steps}")
+    return new_steps
+
+class PerformanceMonitor:
+    def __init__(self):
+        self.history = {
+            'iteration': [],
+            'loss': [],
+            'mfu': [],
+            'batch_size': [],
+            'throughput': [],  # tokens/second
+            'memory_used': [],
+        }
+    
+    def update(self, iter_num, loss, mfu, batch_size, tokens_per_sec):
+        self.history['iteration'].append(iter_num)
+        self.history['loss'].append(loss)
+        self.history['mfu'].append(mfu)
+        self.history['batch_size'].append(batch_size)
+        self.history['throughput'].append(tokens_per_sec)
+        
+        if torch.cuda.is_available():
+            memory_used = torch.cuda.max_memory_allocated() / 1024**3  # GB
+            self.history['memory_used'].append(memory_used)
+    
+    def print_stats(self, window=10):
+        """Print average stats for the last 'window' iterations"""
+        if len(self.history['iteration']) < window:
+            return
+        
+        recent_mfu = np.mean(self.history['mfu'][-window:]) * 100
+        recent_throughput = np.mean(self.history['throughput'][-window:])
+        
+        print(f"Recent performance metrics (last {window} iterations):")
+        print(f"  MFU: {recent_mfu:.2f}%")
+        print(f"  Throughput: {recent_throughput:.2f} tokens/sec")
+        
+        if 'memory_used' in self.history and self.history['memory_used']:
+            recent_memory = np.mean(self.history['memory_used'][-window:])
+            print(f"  GPU Memory: {recent_memory:.2f} GB")
+
 def main():
     args = parse_args()
     
@@ -437,6 +604,14 @@ def main():
         ckpt_path = os.path.join(config.source_dir, 'ckpt.pt')
         checkpoint = torch.load(ckpt_path, map_location=config.device)
     probe_cluster = init_probe_cluster(config, checkpoint)
+
+    # Add this right after probe_cluster initialization
+    if config.auto_tune_batch_size and torch.cuda.is_available():
+        config.batch_size = find_optimal_batch_size(model, config, ctx, get_batch_bound, probe_cluster)
+    
+    # Add after the batch size auto-tuning
+    if hasattr(config, 'original_batch_size') and config.batch_size != config.original_batch_size:
+        config.gradient_accumulation_steps = adaptive_accumulation_steps(config)
     
     # Initialize optimizer
     optimizer = model.configure_optimizers(
@@ -493,6 +668,8 @@ def main():
     local_iter_num = 0
     running_mfu = -1.0
     
+    performance_monitor = PerformanceMonitor()
+    
     while True:
         # Set learning rate for this iteration
         lr = lr_scheduler(iter_num) if config.decay_lr else config.learning_rate
@@ -506,7 +683,6 @@ def main():
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
         
-        # Evaluate and checkpoint
         # Evaluate and checkpoint
         if iter_num % config.eval_interval == 0 and config.master_process:
             losses = estimate_loss(model, config, ctx, get_batch_bound) if config.train_model else {"train": 10.0, "val": 10.0}
@@ -579,39 +755,48 @@ def main():
             
             X, Y, probe_targets = get_batch_bound('train')
             with ctx:
-                logits, transformer_loss, activations = model(X, Y)
+                # Use gradient checkpointing if enabled
+                logits, transformer_loss, activations = model(X, Y, use_checkpoint=config.use_gradient_checkpointing)
                 # Scale loss for gradient accumulation
                 total_loss = transformer_loss / config.gradient_accumulation_steps
             
             # Process probes and adversarial training
             if config.train_probes:
-                accumulated_adversarial_loss = torch.tensor(0, device=config.device, dtype=torch.float)
+                # Make a copy of activations for probe training
+                detached_activations = [a.detach() for a in activations]
                 
                 # Train probes multiple times based on phi parameter
-                for _ in range(config.phi_probe_steps_per_model_update):
+                for probe_step in range(config.phi_probe_steps_per_model_update):
                     # Get fresh batch for each probe update if phi > 1
-                    if _ > 0:
-                        X, Y, probe_targets = get_batch_bound('train')
+                    if probe_step > 0:
+                        X_new, Y_new, probe_targets_new = get_batch_bound('train')
                         with ctx:
-                            _, _, activations = model(X, Y)
+                            _, _, new_activations = model(X_new, Y_new, use_checkpoint=False)
+                            detached_activations = [a.detach() for a in new_activations]
+                            probe_targets = probe_targets_new
                     
                     # Train probes
-                    probe_cluster.loss_backward_probes(activations, probe_targets, scaler)
+                    probe_cluster.loss_backward_probes(detached_activations, probe_targets, scaler)
                     probe_cluster.optimiser_step_probes(scaler)
                     probe_cluster.zero_grad_probes()
                 
-                # For adversarial training, use the last batch's activations
+                # Adversarial training
                 if config.train_adversarially:
-                    probe_losses = probe_cluster.compute_probe_losses(activations, probe_targets)
-                    for probe_loss in probe_losses:
-                        # Negative because we're training adversarially
-                        accumulated_adversarial_loss -= probe_loss
-                    
-                    # Scale adversarial loss dynamically
-                    dynamic_scale = abs(config.lambda_adversarial * total_loss.detach() / 
-                                     accumulated_adversarial_loss.detach())
-                    weighted_adversarial_loss = dynamic_scale * accumulated_adversarial_loss
-                    total_loss += weighted_adversarial_loss
+                    with ctx:
+                        # Compute probe losses on fresh activations (not detached)
+                        probe_losses = probe_cluster.compute_probe_losses(activations, probe_targets)
+                        
+                        # Sum negative probe losses (adversarial objective)
+                        accumulated_adversarial_loss = torch.zeros(1, device=config.device, dtype=torch.float)
+                        for probe_loss in probe_losses:
+                            accumulated_adversarial_loss -= probe_loss
+                        
+                        # Scale adversarial loss dynamically, avoiding division by zero
+                        if accumulated_adversarial_loss.abs().item() > 1e-10:
+                            dynamic_scale = abs(config.lambda_adversarial * total_loss.detach() / 
+                                            (accumulated_adversarial_loss.detach() + 1e-10))
+                            weighted_adversarial_loss = dynamic_scale * accumulated_adversarial_loss
+                            total_loss += weighted_adversarial_loss
             
             # Backward pass
             if config.train_model:
@@ -641,6 +826,14 @@ def main():
                     config.batch_size * config.gradient_accumulation_steps, dt
                 )
                 running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
+
+                # Update performance monitor
+                tokens_per_sec = config.batch_size * config.block_size / dt
+                performance_monitor.update(iter_num, lossf, mfu, config.batch_size, tokens_per_sec)
+                
+                # Print stats every 10 iterations
+                if iter_num % (config.log_interval * 10) == 0:
+                    performance_monitor.print_stats()
                 
             print(f"Iter {iter_num}, loss {lossf:.4f}, lr {lr}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
         
@@ -679,10 +872,16 @@ def main():
             
             print("Training complete!")
             break
+        
+        # Update performance monitor
+        performance_monitor.update(iter_num, transformer_loss.item(), running_mfu, config.batch_size, config.tokens_per_iter / dt)
     
     # Clean up
     if config.is_distributed:
         destroy_process_group()
+
+    # Print final performance stats
+    performance_monitor.print_stats()
 
 if __name__ == "__main__":
     main()

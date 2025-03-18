@@ -170,32 +170,49 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None):
+    def forward(self, idx, targets=None, use_checkpoint=False):
         device = idx.device
         b, t = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
-        pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
-
+        pos = torch.arange(0, t, dtype=torch.long, device=device)
+        
         activations = []
-
+        
         # forward the GPT model itself
-        tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
-        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
+        tok_emb = self.transformer.wte(idx)
+        pos_emb = self.transformer.wpe(pos)
         x = self.transformer.drop(tok_emb + pos_emb)
-        for block in self.transformer.h:
-            x, block_activations = block(x)
-            activations.extend(block_activations)
+        
+        if use_checkpoint and self.training:
+            # Use gradient checkpointing for transformer blocks
+            for i, block in enumerate(self.transformer.h):
+                def create_custom_forward(module):
+                    def custom_forward(*inputs):
+                        return module(*inputs)
+                    return custom_forward
+                
+                # Apply checkpointing to save memory during backward pass
+                x_temp = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(block),
+                    x
+                )
+                x, block_activations = x_temp[0], x_temp[1]
+                activations.extend(block_activations)
+        else:
+            # Standard forward pass
+            for block in self.transformer.h:
+                x, block_activations = block(x)
+                activations.extend(block_activations)
+                
         x = self.transformer.ln_f(x)
-
+        
         if targets is not None:
-            # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
         else:
-            # inference-time mini-optimization: only forward the lm_head on the very last position
-            logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
+            logits = self.lm_head(x[:, [-1], :])
             loss = None
-
+        
         return logits, loss, activations
 
     def crop_block_size(self, block_size):
@@ -293,19 +310,65 @@ class GPT(nn.Module):
         return optimizer
 
     def estimate_mfu(self, fwdbwd_per_iter, dt):
-        """ estimate model flops utilization (MFU) in units of A100 bfloat16 peak FLOPS """
-        # first estimate the number of flops we do per iteration.
-        # see PaLM paper Appendix B as ref: https://arxiv.org/abs/2204.02311
+        """Improved model flops utilization (MFU) estimation"""
+        # Calculate FLOPS with more accurate formula
         N = self.get_num_params()
         cfg = self.config
         L, H, Q, T = cfg.n_layer, cfg.n_head, cfg.n_embd//cfg.n_head, cfg.block_size
-        flops_per_token = 6*N + 12*L*H*Q*T
-        flops_per_fwdbwd = flops_per_token * T
+        
+        # More detailed FLOPS calculation
+        # Attention calculation: 4*L*H*Q*(2*T*Q + T*T)
+        attn_flops = 4 * L * H * Q * (2 * T * Q + T * T)
+        
+        # MLP calculation: 4*L*T*(4*cfg.n_embd*cfg.n_embd + cfg.n_embd)
+        mlp_flops = 4 * L * T * (4 * cfg.n_embd * cfg.n_embd + cfg.n_embd)
+        
+        # Embedding and other operations
+        other_flops = 4 * T * cfg.n_embd * cfg.vocab_size
+        
+        # Total FLOPS per forward pass
+        flops_per_token = attn_flops + mlp_flops + other_flops
+        flops_per_fwdbwd = 3 * flops_per_token  # 1 for forward, 2 for backward
         flops_per_iter = flops_per_fwdbwd * fwdbwd_per_iter
-        # express our flops throughput as ratio of A100 bfloat16 peak flops
-        flops_achieved = flops_per_iter * (1.0/dt) # per second
-        flops_promised = 989e12 # H100 GPU bfloat16 peak flops
+        
+        # Express FLOPS throughput as ratio of peak FLOPS
+        flops_achieved = flops_per_iter * (1.0/dt)  # per second
+        
+        # Update this value based on your actual GPU model
+        gpu_flops_map = {
+            'H100': 989e12,         # H100 FP16/BF16
+            'H100-SXM': 1979e12,    # H100 SXM FP16/BF16
+            'A100': 312e12,         # A100 BF16
+            'A100-SXM': 624e12,     # A100 SXM BF16
+            'L40': 181e12,          # L40 FP16
+            'RTX 4090': 165e12,     # RTX 4090 FP16
+            'RTX 3090': 71e12,      # RTX 3090 FP16
+            'V100': 125e12,         # V100 FP16
+            'T4': 65e12,            # T4 FP16
+        }
+        
+        gpu_model = torch.cuda.get_device_name() if torch.cuda.is_available() else "CPU"
+        
+        # Try to match the GPU model with our map
+        flops_promised = None
+        for key, value in gpu_flops_map.items():
+            if key in gpu_model:
+                flops_promised = value
+                break
+        
+        # Default to A100 if unknown
+        if flops_promised is None:
+            print(f"Unknown GPU model: {gpu_model}. Defaulting to A100 specs.")
+            flops_promised = 312e12
+        
         mfu = flops_achieved / flops_promised
+        
+        # Print additional information for benchmarking
+        if mfu < 0.1:
+            print(f"WARNING: Low MFU ({mfu:.2%}). Consider larger batch size or model.")
+        elif mfu > 0.5:
+            print(f"Good GPU utilization: {mfu:.2%}")
+        
         return mfu
 
     @torch.no_grad()
