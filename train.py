@@ -141,12 +141,17 @@ def init_model(config, meta_vocab_size, device):
                 state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
                 
         model.load_state_dict(state_dict)
-        # Only use checkpoint iter_num if we're actually training the model
-        if config.train_model:
+        # Only use checkpoint iter_num if we're actually continuing standard model training
+        # (not when training adversarially against probes)
+        if config.train_model and not config.train_adversarially:
             iter_num = checkpoint['iter_num']
             best_val_loss = checkpoint['best_val_loss']
         else:
-            print("Not training model, starting iteration count from 0")
+            print("Starting a new training run (adversarial or probe-only), resetting iteration count to 0")
+            iter_num = 0  # Reset iteration counter
+            # Still keep the best validation loss to avoid regressing
+            if 'best_val_loss' in checkpoint:
+                best_val_loss = checkpoint['best_val_loss']
         
     elif config.init_from.startswith('gpt2'):
         print(f"Initializing from OpenAI GPT-2 weights: {config.init_from}")

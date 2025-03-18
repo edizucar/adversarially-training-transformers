@@ -37,7 +37,7 @@ warmup_iters: 0 # skip warmup when not training the model
 
 # Training components
 train_probes: true
-train_model: false
+train_model: true
 
 # Probe config
 probe_type: 'linear'
