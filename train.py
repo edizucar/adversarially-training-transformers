@@ -64,16 +64,7 @@ def setup_pytorch(config, device_type):
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
     
-    # Optimize memory allocation
-    if device_type == 'cuda':
-        # Use asynchronous cuda operations
-        torch.cuda.set_device(config.local_rank)
-        torch.cuda.empty_cache()
-        
-        # Set more aggressive memory allocation
-        if hasattr(torch.cuda, 'memory_stats'):
-            torch.cuda.memory_reserved = lambda device: torch.cuda.memory_stats(device)['reserved_bytes.all']
-            torch.cuda.max_memory_reserved = lambda device: torch.cuda.memory_stats(device)['reserved_bytes.all.peak']
+    # No need to reassign memory functions - use the built-in ones directly
     
     # Setup dtype and autocast context
     if config.dtype == 'auto':
@@ -92,6 +83,15 @@ def setup_pytorch(config, device_type):
         }[config.dtype]
     
     ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
+    
+    # For specific GPU types (add near model initialization)
+    if device_type == 'cuda' and torch.cuda.get_device_properties(0).major >= 8:  # Ampere or newer
+        torch.set_float32_matmul_precision('high')
+    
+    # Optimize memory allocator behavior
+    torch.cuda.memory_stats(device=0)
+    torch.cuda.reset_peak_memory_stats(device=0)
+    
     return ctx, ptdtype
 
 def get_batch(split, train_data, val_data, config, device, device_type):
@@ -152,8 +152,11 @@ def get_batch_prefetched(split, train_data, val_data, config, device, device_typ
         else:
             y = y.to(device)
     
-    # Generate probe targets (could be done on CPU in parallel)
-    _, _, probe_targets = ProbeIntervention.in_quotes_feature_demian(x)
+    # Generate probe targets on CPU first, then transfer to GPU
+    x_cpu = torch.stack([torch.from_numpy((data[offset:offset+config.block_size]).astype(np.int64)) 
+                        for offset in offsets])
+    _, _, probe_targets = ProbeIntervention.in_quotes_feature_demian(x_cpu)
+    
     if device_type == 'cuda':
         probe_targets = probe_targets.pin_memory().to(device, non_blocking=True)
     else:
@@ -421,7 +424,7 @@ def process_probe_prediction_distribution(data, probe_num, display=True):
     )
     print("\n")
 
-def find_optimal_batch_size(model, config, ctx, get_batch_fn, max_batch_size=512, step=32):
+def find_optimal_batch_size(model, config, ctx, get_batch_fn, probe_cluster=None, max_batch_size=512, step=32):
     """Find the largest batch size that fits in memory"""
     print("Finding optimal batch size...")
     
@@ -588,7 +591,7 @@ def main():
     
     # Get batch function with config bound to it
     def get_batch_bound(split):
-        return get_batch(split, train_data, val_data, config, config.device, device_type)
+        return get_batch_prefetched(split, train_data, val_data, config, config.device, device_type)
     
     # Get vocabulary size from meta.pkl if available
     meta_path = os.path.join(data_dir, 'meta.pkl')
@@ -609,11 +612,11 @@ def main():
         checkpoint = torch.load(ckpt_path, map_location=config.device)
     probe_cluster = init_probe_cluster(config, checkpoint)
 
-    # if config.auto_tune_batch_size and torch.cuda.is_available():
-    #     config.batch_size = find_optimal_batch_size(model, config, ctx, get_batch_bound, probe_cluster)
+    if config.auto_tune_batch_size and torch.cuda.is_available():
+        config.batch_size = find_optimal_batch_size(model, config, ctx, get_batch_bound, probe_cluster)
     
-    # if hasattr(config, 'original_batch_size') and config.batch_size != config.original_batch_size:
-    #     config.gradient_accumulation_steps = adaptive_accumulation_steps(config)
+    if hasattr(config, 'original_batch_size') and config.batch_size != config.original_batch_size:
+        config.gradient_accumulation_steps = adaptive_accumulation_steps(config)
     
     # Initialize optimizer
     optimizer = model.configure_optimizers(
@@ -756,6 +759,10 @@ def main():
                 )
             
             X, Y, probe_targets = get_batch_bound('train')
+            
+            # Add this line here - right before entering the context manager
+            torch.cuda.set_stream(torch.cuda.Stream())
+            
             with ctx:
                 # Use gradient checkpointing if enabled
                 logits, transformer_loss, activations = model(X, Y, use_checkpoint=config.use_gradient_checkpointing)
@@ -764,23 +771,49 @@ def main():
             
             # Process probes and adversarial training
             if config.train_probes:
-                # Make a copy of activations for probe training
-                detached_activations = [a.detach() for a in activations]
-                
-                # Train probes multiple times based on phi parameter
-                for probe_step in range(config.phi_probe_steps_per_model_update):
-                    # Get fresh batch for each probe update if phi > 1
-                    if probe_step > 0:
-                        X_new, Y_new, probe_targets_new = get_batch_bound('train')
-                        with ctx:
-                            _, _, new_activations = model(X_new, Y_new, use_checkpoint=False)
-                            detached_activations = [a.detach() for a in new_activations]
-                            probe_targets = probe_targets_new
+                # Improved approach - batched processing
+                BATCH_SIZE = min(4, config.phi_probe_steps_per_model_update)
+
+                if BATCH_SIZE > 1:
+                    # Prepare batches in parallel
+                    all_X = []
+                    all_Y = []
+                    all_probe_targets = []
                     
-                    # Train probes
-                    probe_cluster.loss_backward_probes(detached_activations, probe_targets, scaler)
-                    probe_cluster.optimiser_step_probes(scaler)
-                    probe_cluster.zero_grad_probes()
+                    # Get all batches first (better memory locality)
+                    for _ in range(BATCH_SIZE):
+                        X_new, Y_new, probe_targets_new = get_batch_bound('train')
+                        all_X.append(X_new)
+                        all_Y.append(Y_new)
+                        all_probe_targets.append(probe_targets_new)
+                    
+                    # Process batches with a single larger forward pass
+                    # Concatenate on batch dimension
+                    batched_X = torch.cat(all_X, dim=0)
+                    batched_Y = torch.cat(all_Y, dim=0)
+                    
+                    # Single larger forward pass instead of multiple small ones
+                    with ctx:
+                        _, _, batched_activations = model(batched_X, batched_Y, use_checkpoint=False)
+                        
+                    # Split activations back into original batch size chunks
+                    split_size = batched_X.size(0) // BATCH_SIZE
+                    
+                    for step in range(BATCH_SIZE):
+                        # Extract slice of activations for this probe update
+                        start_idx = step * split_size
+                        end_idx = (step + 1) * split_size
+                        
+                        # Extract activations for this batch
+                        step_activations = [
+                            act[start_idx:end_idx].detach() 
+                            for act in batched_activations
+                        ]
+                        
+                        # Train probes on this batch
+                        probe_cluster.loss_backward_probes(step_activations, all_probe_targets[step], scaler)
+                        probe_cluster.optimiser_step_probes(scaler)
+                        probe_cluster.zero_grad_probes()
                 
                 # Adversarial training
                 if config.train_adversarially:
@@ -831,11 +864,11 @@ def main():
 
                 # Update performance monitor
                 tokens_per_sec = config.batch_size * config.block_size / dt
-                # performance_monitor.update(iter_num, lossf, mfu, config.batch_size, tokens_per_sec)
+                performance_monitor.update(iter_num, lossf, mfu, config.batch_size, tokens_per_sec)
                 
                 # Print stats every 10 iterations
-                # if iter_num % (config.log_interval * 10) == 0:
-                #     performance_monitor.print_stats()
+                if iter_num % (config.log_interval * 10) == 0:
+                    performance_monitor.print_stats()
                 
             print(f"Iter {iter_num}, loss {lossf:.4f}, lr {lr}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
         
@@ -879,7 +912,15 @@ def main():
             break
         
         # Update performance monitor
-        # performance_monitor.update(iter_num, transformer_loss.item(), running_mfu, config.batch_size, config.tokens_per_iter / dt)
+        performance_monitor.update(iter_num, transformer_loss.item(), running_mfu, config.batch_size, config.tokens_per_iter / dt)
+        
+        if iter_num % 100 == 0 and torch.cuda.is_available():
+            print(f"Memory allocated: {torch.cuda.memory_allocated()/1e9:.2f} GB")
+            print(f"Memory reserved: {torch.cuda.memory_reserved()/1e9:.2f} GB")
+
+        # Add near the end of each iteration
+        if torch.cuda.is_available() and iter_num % 50 == 0:
+            torch.cuda.empty_cache()
     
     # Clean up
     if config.is_distributed:

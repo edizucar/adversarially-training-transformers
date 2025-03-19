@@ -58,19 +58,36 @@ class CausalSelfAttention(nn.Module):
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
 
-        # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
-        if self.flash:
-            # efficient attention using Flash Attention CUDA kernels
-            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
-        else:
-            # manual implementation of attention
-            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-            att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
-            att = F.softmax(att, dim=-1)
-            att = self.attn_dropout(att)
-            y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
-
+        # Check if flash-attention 2 is available (it's much faster than PyTorch's implementation)
+        try:
+            from flash_attn import flash_attn_func
+            # flash_attn expects shape (B, S, H, D)
+            q = q.transpose(1, 2)  # (B, T, nh, hs)
+            k = k.transpose(1, 2)  # (B, T, nh, hs)
+            v = v.transpose(1, 2)  # (B, T, nh, hs)
+            
+            # Flash attention expects contiguous tensors
+            q, k, v = q.contiguous(), k.contiguous(), v.contiguous()
+            
+            # Flash attention with causal mask
+            y = flash_attn_func(q, k, v, dropout_p=self.dropout if self.training else 0.0, causal=True)
+            
+            # Reshape back to PyTorch's expected format
+            y = y.transpose(1, 2).contiguous().view(B, T, C)
+            
+        except ImportError:
+            # Fall back to PyTorch's scaled_dot_product_attention or manual implementation
+            if self.flash:
+                # efficient attention using Flash Attention CUDA kernels
+                y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
+            else:
+                # manual implementation of attention
+                att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+                att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+                att = F.softmax(att, dim=-1)
+                att = self.attn_dropout(att)
+                y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        
         # output projection
         y = self.resid_dropout(self.c_proj(y))
         return y
@@ -362,6 +379,8 @@ class GPT(nn.Module):
             flops_promised = 312e12
         
         mfu = flops_achieved / flops_promised
+
+        print(f"Promised: {flops_promised}, Achieved: {flops_achieved}, MFU: {mfu:.2%}")
         
         # Print additional information for benchmarking
         if mfu < 0.1:

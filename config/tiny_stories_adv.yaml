@@ -2,9 +2,9 @@
 source_dir: 'checkpoints/backup-checkpoint-24-02'
 dest_dir: 'checkpoints/tiny_stories_adv'
 max_iters: 2000
-eval_interval: 400
-eval_iters: 50
-log_interval: 400
+eval_interval: 500
+eval_iters: 20
+log_interval: 500
 
 # Checkpointing
 always_save_checkpoint: false
@@ -18,9 +18,9 @@ wandb_run_name: 'mini-gpt-adversarial'
 # Dataset config
 dataset: 'tiny_stories'
 compile: true
-gradient_accumulation_steps: 1
-use_gradient_checkpointing: false
-auto_tune_batch_size: false
+gradient_accumulation_steps: 4
+use_gradient_checkpointing: true
+auto_tune_batch_size: true
 batch_size: 128
 block_size: 256
 dtype: 'bfloat16'
@@ -34,7 +34,7 @@ dropout: 0.2
 # Optimizer
 learning_rate: 1e-3
 decay_lr: true
-lr_decay_iters: 4500
+lr_decay_iters: 2000
 min_lr: 1e-4
 beta2: 0.99
 warmup_iters: 0 # skip warmup when not training the model
@@ -47,7 +47,7 @@ train_model: true
 probe_type: 'linear'
 probe_learning_rate: 1e-3
 lambda_adversarial: 1e-1
-phi_probe_steps_per_model_update: 5
+phi_probe_steps_per_model_update: 1
 train_adversarially: true
 
 # Initialization
