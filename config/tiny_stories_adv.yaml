@@ -4,7 +4,7 @@ dest_dir: 'checkpoints/tiny_stories_adv'
 max_iters: 2000
 eval_interval: 500
 eval_iters: 20
-log_interval: 500
+log_interval: 45
 
 # Checkpointing
 always_save_checkpoint: false
@@ -18,9 +18,9 @@ wandb_run_name: 'mini-gpt-adversarial'
 # Dataset config
 dataset: 'tiny_stories'
 compile: true
-gradient_accumulation_steps: 4
-use_gradient_checkpointing: true
-auto_tune_batch_size: true
+gradient_accumulation_steps: 8
+use_gradient_checkpointing: false
+auto_tune_batch_size: false
 batch_size: 128
 block_size: 256
 dtype: 'bfloat16'

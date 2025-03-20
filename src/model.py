@@ -50,47 +50,63 @@ class CausalSelfAttention(nn.Module):
                                         .view(1, 1, config.block_size, config.block_size))
 
     def forward(self, x):
-        B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
+        B, T, C = x.size()  # batch size, sequence length, embedding dim
 
-        # calculate query, key, values for all heads in batch and move head forward to be the batch dim
-        q, k, v  = self.c_attn(x).split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-
-        # Check if flash-attention 2 is available (it's much faster than PyTorch's implementation)
+        # Calculate query, key, values for all heads in batch
+        qkv = self.c_attn(x)
+        q, k, v = qkv.chunk(3, dim=2)
+        
+        # Reshape for attention computation
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        
+        # Try flash-attention first, then PyTorch's implementation, then manual
+        # To ensure the right implementation is used
+        attention_output = None
+        
+        # Try Flash Attention 2 first (fastest)
         try:
             from flash_attn import flash_attn_func
-            # flash_attn expects shape (B, S, H, D)
-            q = q.transpose(1, 2)  # (B, T, nh, hs)
-            k = k.transpose(1, 2)  # (B, T, nh, hs)
-            v = v.transpose(1, 2)  # (B, T, nh, hs)
-            
-            # Flash attention expects contiguous tensors
-            q, k, v = q.contiguous(), k.contiguous(), v.contiguous()
+            q_fa = q.transpose(1, 2).contiguous()  # [B, T, H, D]
+            k_fa = k.transpose(1, 2).contiguous()  # [B, T, H, D]
+            v_fa = v.transpose(1, 2).contiguous()  # [B, T, H, D]
             
             # Flash attention with causal mask
-            y = flash_attn_func(q, k, v, dropout_p=self.dropout if self.training else 0.0, causal=True)
-            
-            # Reshape back to PyTorch's expected format
-            y = y.transpose(1, 2).contiguous().view(B, T, C)
-            
-        except ImportError:
-            # Fall back to PyTorch's scaled_dot_product_attention or manual implementation
-            if self.flash:
-                # efficient attention using Flash Attention CUDA kernels
-                y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
-            else:
-                # manual implementation of attention
-                att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-                att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
-                att = F.softmax(att, dim=-1)
-                att = self.attn_dropout(att)
-                y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+            y_fa = flash_attn_func(
+                q_fa, k_fa, v_fa,
+                dropout_p=self.dropout if self.training else 0.0,
+                causal=True
+            )
+            attention_output = y_fa.transpose(1, 2).reshape(B, T, C)
+        except (ImportError, RuntimeError) as e:
+            pass
         
-        # output projection
-        y = self.resid_dropout(self.c_proj(y))
-        return y
+        # If flash attention failed, try PyTorch's implementation
+        if attention_output is None and self.flash:
+            try:
+                y = torch.nn.functional.scaled_dot_product_attention(
+                    q, k, v, 
+                    attn_mask=None,
+                    dropout_p=self.dropout if self.training else 0,
+                    is_causal=True
+                )
+                attention_output = y.transpose(1, 2).reshape(B, T, C)
+            except Exception:
+                pass
+            
+        # If both failed, use manual implementation
+        if attention_output is None:
+            # Manual attention calculation
+            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+            att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+            att = F.softmax(att, dim=-1)
+            att = self.attn_dropout(att)
+            y = att @ v  # [B, nh, T, hs]
+            attention_output = y.transpose(1, 2).reshape(B, T, C)
+        
+        # Output projection  
+        return self.resid_dropout(self.c_proj(attention_output))
 
 class MLP(nn.Module):
 
@@ -319,74 +335,106 @@ class GPT(nn.Module):
         print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
         # Create AdamW optimizer and use the fused version if it is available
         fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
-        use_fused = fused_available and device_type == 'cuda'
-        extra_args = dict(fused=True) if use_fused else dict()
-        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas, **extra_args)
+        use_fused = 'fused' in inspect.signature(torch.optim.AdamW).parameters and device_type == 'cuda'
+        optimizer = torch.optim.AdamW(
+            optim_groups, 
+            lr=learning_rate, 
+            betas=betas, 
+            fused=use_fused  # Enable fused implementation when available
+        )
         print(f"using fused AdamW: {use_fused}")
 
         return optimizer
 
-    def estimate_mfu(self, fwdbwd_per_iter, dt):
-        """Improved model flops utilization (MFU) estimation"""
-        # Calculate FLOPS with more accurate formula
-        N = self.get_num_params()
+    def estimate_mfu(self, batch_size, dt, seq_len=None):
+        """
+        Estimate model flops utilization (MFU) with improved accuracy
+        
+        Args:
+            batch_size: Batch size for the step being measured
+            dt: Time per step in seconds
+            seq_len: Actual sequence length used, defaults to block_size if not provided
+        
+        Returns:
+            mfu: Model FLOPs Utilization as a fraction of theoretical peak
+        """
         cfg = self.config
-        L, H, Q, T = cfg.n_layer, cfg.n_head, cfg.n_embd//cfg.n_head, cfg.block_size
+        # Use actual sequence length if provided, otherwise use block_size
+        T = seq_len if seq_len is not None else cfg.block_size
+        L, H, D = cfg.n_layer, cfg.n_head, cfg.n_embd
         
-        # More detailed FLOPS calculation
-        # Attention calculation: 4*L*H*Q*(2*T*Q + T*T)
-        attn_flops = 4 * L * H * Q * (2 * T * Q + T * T)
+        # Total tokens processed in this step
+        tokens = batch_size * T
         
-        # MLP calculation: 4*L*T*(4*cfg.n_embd*cfg.n_embd + cfg.n_embd)
-        mlp_flops = 4 * L * T * (4 * cfg.n_embd * cfg.n_embd + cfg.n_embd)
+        # FLOPS per sequence position (each matrix multiply is 2*m*n*k flops)
+        # Self-attention block per sequence position:
+        # 1. QKV projection: 2 * D * 3D = 6D²
+        # 2. Attention computation: 2 * T * D = 2TD (scaled by 4 for Q*K, softmax, mask, V*attn)
+        # 3. Output projection: 2 * D * D = 2D²
+        # Total per position per layer: 8D² + 2TD
         
-        # Embedding and other operations
-        other_flops = 4 * T * cfg.n_embd * cfg.vocab_size
+        # MLP block per sequence position:
+        # 1. FC1: 2 * D * 4D = 8D²
+        # 2. GELU: D (approx)
+        # 3. FC2: 2 * 4D * D = 8D²
+        # Total per position per layer: 16D² + D
         
-        # Total FLOPS per forward pass
-        flops_per_token = attn_flops + mlp_flops + other_flops
-        flops_per_fwdbwd = 3 * flops_per_token  # 1 for forward, 2 for backward
-        flops_per_iter = flops_per_fwdbwd * fwdbwd_per_iter
+        # Total per position for all layers: L * (8D² + 2TD + 16D² + D) = L * (24D² + 2TD + D)
+
+        # Include sequence-level operations (token+pos embeddings, final layernorm)
+        # These are minor compared to the per-position operations
         
-        # Express FLOPS throughput as ratio of peak FLOPS
-        flops_achieved = flops_per_iter * (1.0/dt)  # per second
+        # Convert to total FLOPS for forward pass
+        flops_per_seq = T * L * (24 * D * D + 2 * T * D + D)
         
-        # Update this value based on your actual GPU model
+        # Output layer/softmax: 2 * T * D * vocab_size
+        flops_per_seq += 2 * T * D * cfg.vocab_size
+        
+        # Multiply by batch size for total FLOPS
+        flops_forward = flops_per_seq * batch_size
+        
+        # Backward pass (approximately 2x forward)
+        flops_total = 3 * flops_forward
+        
+        # FLOPS per second
+        flops_per_second = flops_total / dt
+        
+        # GPU FLOPS capability database (theoretical peak for FP16/BF16)
         gpu_flops_map = {
-            'H100': 989e12,         # H100 FP16/BF16
             'H100-SXM': 1979e12,    # H100 SXM FP16/BF16
-            'A100': 312e12,         # A100 BF16
+            'H100': 989e12,         # H100 PCIe FP16/BF16
             'A100-SXM': 624e12,     # A100 SXM BF16
+            'A100': 312e12,         # A100 PCIe BF16
             'L40': 181e12,          # L40 FP16
             'RTX 4090': 165e12,     # RTX 4090 FP16
             'RTX 3090': 71e12,      # RTX 3090 FP16
-            'V100': 125e12,         # V100 FP16
+            'V100-SXM': 125e12,     # V100 SXM FP16
+            'V100': 112e12,         # V100 PCIe FP16
             'T4': 65e12,            # T4 FP16
         }
         
+        # Get current GPU name
         gpu_model = torch.cuda.get_device_name() if torch.cuda.is_available() else "CPU"
         
         # Try to match the GPU model with our map
         flops_promised = None
-        for key, value in gpu_flops_map.items():
+        for key in gpu_flops_map.keys():
             if key in gpu_model:
-                flops_promised = value
+                flops_promised = gpu_flops_map[key]
                 break
         
         # Default to A100 if unknown
         if flops_promised is None:
-            print(f"Unknown GPU model: {gpu_model}. Defaulting to A100 specs.")
+            print(f"Unknown GPU model: {gpu_model}. Defaulting to A100 PCIe specs.")
             flops_promised = 312e12
         
-        mfu = flops_achieved / flops_promised
-
-        print(f"Promised: {flops_promised}, Achieved: {flops_achieved}, MFU: {mfu:.2%}")
+        mfu = flops_per_second / flops_promised
         
-        # Print additional information for benchmarking
-        if mfu < 0.1:
-            print(f"WARNING: Low MFU ({mfu:.2%}). Consider larger batch size or model.")
-        elif mfu > 0.5:
-            print(f"Good GPU utilization: {mfu:.2%}")
+        # Print detailed information
+        print(f"Model: {L}L, {H}H, {D}D, seq_len={T}, batch={batch_size}")
+        print(f"FLOPS calculation: {flops_total/1e12:.1f}T FLOPS per step")
+        print(f"Step time: {dt*1000:.1f}ms, throughput: {tokens/dt:,.0f} tokens/sec")
+        print(f"Achieved: {flops_per_second/1e12:.2f} TFLOPS, Peak: {flops_promised/1e12:.2f} TFLOPS")
         
         return mfu
 

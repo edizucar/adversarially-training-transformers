@@ -106,7 +106,7 @@ def get_batch(split, train_data, val_data, config, device, device_type):
                     for offset in offsets])
     
     # Generate probe targets
-    _, _, probe_targets = ProbeIntervention.in_quotes_feature_demian(x)
+    _, _, probe_targets = ProbeIntervention.in_quotes_feature_optimized(x)
     
     # Get target sequence (shifted by 1)
     y = torch.stack([torch.from_numpy((data[offset+1:offset+1+config.block_size]).astype(np.int64)) 
@@ -155,7 +155,7 @@ def get_batch_prefetched(split, train_data, val_data, config, device, device_typ
     # Generate probe targets on CPU first, then transfer to GPU
     x_cpu = torch.stack([torch.from_numpy((data[offset:offset+config.block_size]).astype(np.int64)) 
                         for offset in offsets])
-    _, _, probe_targets = ProbeIntervention.in_quotes_feature_demian(x_cpu)
+    _, _, probe_targets = ProbeIntervention.in_quotes_feature_optimized(x_cpu)
     
     if device_type == 'cuda':
         probe_targets = probe_targets.pin_memory().to(device, non_blocking=True)
@@ -165,6 +165,35 @@ def get_batch_prefetched(split, train_data, val_data, config, device, device_typ
     # Synchronize streams before returning
     if device_type == 'cuda':
         torch.cuda.synchronize()
+        
+    return x, y, probe_targets
+
+def get_batch_optimized(split, train_data, val_data, config, device, device_type):
+    """Optimized batch preparation with minimal CPU-GPU synchronization"""
+    data = train_data if split == 'train' else val_data
+    
+    # Generate all offsets at once
+    offsets = torch.randint(len(data) - config.block_size, (config.batch_size,))
+    
+    # Prepare input and target sequences in a vectorized way
+    x_np = np.stack([data[offset:offset+config.block_size] for offset in offsets])
+    y_np = np.stack([data[offset+1:offset+1+config.block_size] for offset in offsets])
+    
+    # Convert to torch tensors
+    x = torch.from_numpy(x_np.astype(np.int64))
+    y = torch.from_numpy(y_np.astype(np.int64))
+    
+    # Generate probe targets more efficiently (in-quotes feature)
+    # This is a placeholder - we'll optimize this function separately
+    _, _, probe_targets = ProbeIntervention.in_quotes_feature_optimized(x)
+    
+    if device_type == 'cuda':
+        # Pin memory for async transfer and move to device in one operation
+        x, y = x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
+        probe_targets = probe_targets.pin_memory().to(device, non_blocking=True)
+    else:
+        x, y = x.to(device), y.to(device)
+        probe_targets = probe_targets.to(device)
         
     return x, y, probe_targets
 
@@ -353,7 +382,7 @@ def probe_accuracy_sampling(model, probe_cluster, config, ctx, get_batch_fn, pro
         X, Y, probe_targets = get_batch_fn("val")
         with ctx:
             _, _, activations = model(X, Y)
-            b_text, b_tokens, b_feature_targets = ProbeIntervention.in_quotes_feature_demian(X)
+            b_text, b_tokens, b_feature_targets = ProbeIntervention.in_quotes_feature_optimized(X)
         
         for batch in range(config.batch_size):
             a = [a[batch].unsqueeze(dim=0) for a in activations]
@@ -675,6 +704,10 @@ def main():
     
     performance_monitor = PerformanceMonitor()
     
+    # At the start of the training loop:
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True  # Auto-tune kernels for your hardware
+    
     while True:
         # Set learning rate for this iteration
         lr = lr_scheduler(iter_num) if config.decay_lr else config.learning_rate
@@ -758,84 +791,137 @@ def main():
                     micro_step == config.gradient_accumulation_steps - 1
                 )
             
-            X, Y, probe_targets = get_batch_bound('train')
+            # REPLACE FROM HERE
+            # X, Y, probe_targets = get_batch_bound('train')
             
-            # Add this line here - right before entering the context manager
-            torch.cuda.set_stream(torch.cuda.Stream())
+            # # Add this line here - right before entering the context manager
+            # torch.cuda.set_stream(torch.cuda.Stream())
             
-            with ctx:
-                # Use gradient checkpointing if enabled
-                logits, transformer_loss, activations = model(X, Y, use_checkpoint=config.use_gradient_checkpointing)
-                # Scale loss for gradient accumulation
-                total_loss = transformer_loss / config.gradient_accumulation_steps
+            # with ctx:
+            #     # Use gradient checkpointing if enabled
+            #     logits, transformer_loss, activations = model(X, Y, use_checkpoint=config.use_gradient_checkpointing)
+            #     # Scale loss for gradient accumulation
+            #     total_loss = transformer_loss / config.gradient_accumulation_steps
             
-            # Process probes and adversarial training
-            if config.train_probes:
-                # Improved approach - batched processing
-                BATCH_SIZE = min(4, config.phi_probe_steps_per_model_update)
+            # # Process probes and adversarial training
+            # if config.train_probes:
+            #     # Improved approach - batched processing
+            #     BATCH_SIZE = min(4, config.phi_probe_steps_per_model_update)
 
-                if BATCH_SIZE > 1:
-                    # Prepare batches in parallel
-                    all_X = []
-                    all_Y = []
-                    all_probe_targets = []
+            #     if BATCH_SIZE > 1:
+            #         # Prepare batches in parallel
+            #         all_X = []
+            #         all_Y = []
+            #         all_probe_targets = []
                     
-                    # Get all batches first (better memory locality)
-                    for _ in range(BATCH_SIZE):
-                        X_new, Y_new, probe_targets_new = get_batch_bound('train')
-                        all_X.append(X_new)
-                        all_Y.append(Y_new)
-                        all_probe_targets.append(probe_targets_new)
+            #         # Get all batches first (better memory locality)
+            #         for _ in range(BATCH_SIZE):
+            #             X_new, Y_new, probe_targets_new = get_batch_bound('train')
+            #             all_X.append(X_new)
+            #             all_Y.append(Y_new)
+            #             all_probe_targets.append(probe_targets_new)
                     
-                    # Process batches with a single larger forward pass
-                    # Concatenate on batch dimension
-                    batched_X = torch.cat(all_X, dim=0)
-                    batched_Y = torch.cat(all_Y, dim=0)
+            #         # Process batches with a single larger forward pass
+            #         # Concatenate on batch dimension
+            #         batched_X = torch.cat(all_X, dim=0)
+            #         batched_Y = torch.cat(all_Y, dim=0)
                     
-                    # Single larger forward pass instead of multiple small ones
-                    with ctx:
-                        _, _, batched_activations = model(batched_X, batched_Y, use_checkpoint=False)
+            #         # Single larger forward pass instead of multiple small ones
+            #         with ctx:
+            #             _, _, batched_activations = model(batched_X, batched_Y, use_checkpoint=False)
                         
-                    # Split activations back into original batch size chunks
-                    split_size = batched_X.size(0) // BATCH_SIZE
+            #         # Split activations back into original batch size chunks
+            #         split_size = batched_X.size(0) // BATCH_SIZE
                     
-                    for step in range(BATCH_SIZE):
-                        # Extract slice of activations for this probe update
-                        start_idx = step * split_size
-                        end_idx = (step + 1) * split_size
+            #         for step in range(BATCH_SIZE):
+            #             # Extract slice of activations for this probe update
+            #             start_idx = step * split_size
+            #             end_idx = (step + 1) * split_size
                         
-                        # Extract activations for this batch
-                        step_activations = [
-                            act[start_idx:end_idx].detach() 
-                            for act in batched_activations
-                        ]
+            #             # Extract activations for this batch
+            #             step_activations = [
+            #                 act[start_idx:end_idx].detach() 
+            #                 for act in batched_activations
+            #             ]
                         
-                        # Train probes on this batch
-                        probe_cluster.loss_backward_probes(step_activations, all_probe_targets[step], scaler)
-                        probe_cluster.optimiser_step_probes(scaler)
-                        probe_cluster.zero_grad_probes()
+            #             # Train probes on this batch
+            #             probe_cluster.loss_backward_probes(step_activations, all_probe_targets[step], scaler)
+            #             probe_cluster.optimiser_step_probes(scaler)
+            #             probe_cluster.zero_grad_probes()
                 
-                # Adversarial training
-                if config.train_adversarially:
-                    with ctx:
-                        # Compute probe losses on fresh activations (not detached)
+            #     # Adversarial training
+            #     if config.train_adversarially:
+            #         with ctx:
+            #             # Compute probe losses on fresh activations (not detached)
+            #             probe_losses = probe_cluster.compute_probe_losses(activations, probe_targets)
+                        
+            #             # Sum negative probe losses (adversarial objective)
+            #             accumulated_adversarial_loss = torch.zeros_like(total_loss, device=config.device, dtype=torch.float)
+            #             for probe_loss in probe_losses:
+            #                 accumulated_adversarial_loss -= probe_loss
+                        
+            #             # Scale adversarial loss dynamically, avoiding division by zero
+            #             if accumulated_adversarial_loss.abs().item() > 1e-10:
+            #                 dynamic_scale = abs(config.lambda_adversarial * total_loss.detach() / 
+            #                                 (accumulated_adversarial_loss.detach() + 1e-10))
+            #                 weighted_adversarial_loss = dynamic_scale * accumulated_adversarial_loss
+            #                 total_loss += weighted_adversarial_loss
+            
+            # # Backward pass
+            # if config.train_model:
+            #     scaler.scale(total_loss).backward()
+            # REPLACE WITH:
+            
+            with torch.cuda.amp.autocast(enabled=(config.dtype in ['float16', 'bfloat16'])):
+                # Get batch only once per step
+                X, Y, probe_targets = get_batch_bound('train')
+                
+                # Forward pass with all computation needed for this step
+                logits, transformer_loss, activations = model(X, Y, use_checkpoint=config.use_gradient_checkpointing)
+                total_loss = transformer_loss / config.gradient_accumulation_steps
+                
+                # Process probes more efficiently
+                if config.train_probes:
+                    # Get detached activations for probe training
+                    with torch.no_grad():
+                        detached_activations = [act.detach() for act in activations]
+                    
+                    # Update probes multiple times per model update
+                    # num_probe_updates = min(config.phi_probe_steps_per_model_update, 4)  # Cap at 4 for efficiency
+                    num_probe_updates = config.phi_probe_steps_per_model_update
+
+                    if num_probe_updates > 1:
+                        # Multiple probe updates - get additional batches
+                        for _ in range(num_probe_updates):
+                            # Train probes on current batch
+                            probe_cluster.loss_backward_probes(detached_activations, probe_targets, scaler)
+                            probe_cluster.optimiser_step_probes(scaler)
+                            
+                            # Get a new batch for next probe update if not the last one
+                            if _ < num_probe_updates - 1:
+                                X_new, Y_new, probe_targets_new = get_batch_bound('train')
+                                with torch.no_grad():
+                                    # Get new activations without recomputing gradients
+                                    _, _, new_activations = model(X_new, Y_new, use_checkpoint=False)
+                                    detached_activations = [act.detach() for act in new_activations]
+                                probe_targets = probe_targets_new
+                    else:
+                        # Just one probe update
+                        probe_cluster.loss_backward_probes(detached_activations, probe_targets, scaler)
+                        probe_cluster.optimiser_step_probes(scaler)
+                    
+                    # Adversarial training
+                    if config.train_adversarially:
+                        # Compute probe losses directly on the activations (not detached)
                         probe_losses = probe_cluster.compute_probe_losses(activations, probe_targets)
                         
-                        # Sum negative probe losses (adversarial objective)
-                        accumulated_adversarial_loss = torch.zeros_like(total_loss, device=config.device, dtype=torch.float)
-                        for probe_loss in probe_losses:
-                            accumulated_adversarial_loss -= probe_loss
-                        
-                        # Scale adversarial loss dynamically, avoiding division by zero
-                        if accumulated_adversarial_loss.abs().item() > 1e-10:
-                            dynamic_scale = abs(config.lambda_adversarial * total_loss.detach() / 
-                                            (accumulated_adversarial_loss.detach() + 1e-10))
-                            weighted_adversarial_loss = dynamic_scale * accumulated_adversarial_loss
-                            total_loss += weighted_adversarial_loss
-            
-            # Backward pass
-            if config.train_model:
-                scaler.scale(total_loss).backward()
+                        # More numerically stable adversarial loss calculation
+                        adversarial_loss = -sum(probe_losses) * config.lambda_adversarial
+                        total_loss += adversarial_loss
+                
+                # Scale and backward
+                if config.train_model:
+                    scaler.scale(total_loss).backward()
         
         # Gradient clipping
         if config.grad_clip != 0.0 and config.train_model:
@@ -878,12 +964,11 @@ def main():
         
         # Check termination conditions
         if iter_num > config.max_iters or stop_requested:
-            print("Final iteration reached!")
-            print("\nDisplay final information:")
-
             if stop_requested and not hasattr(config, 'show_final_eval_on_stop'):
                 print("\nSkipping final evaluation due to interrupt and --show-final-eval-on-stop flag not set")
             else:
+                print("Final iteration reached!")
+                print("\nDisplay final information:")
                 # Display final probe stats
                 if config.train_probes:
                     # Evaluate probes with predictions display
@@ -928,6 +1013,7 @@ def main():
 
     # Print final performance stats
     performance_monitor.print_stats()
+    break
 
 if __name__ == "__main__":
     main()

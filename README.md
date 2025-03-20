@@ -30,6 +30,15 @@ If you want to only train the probes against a pre-trained model (you will need 
 python train.py config/<config>.yaml
 ```
 
+# Monitoring
+
+If you want to monitor the GPU utilization, run the following command in a separate terminal (e.g. a new tmux pane):
+
+```bash
+chmod +x monitor_gpu.sh
+bash monitor_gpu.sh
+```
+
 ## Configuration Files
 
 ### `tiny_stories_adv.yaml`

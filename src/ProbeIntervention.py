@@ -14,6 +14,7 @@ import torch.nn.functional as F
 import wandb
 from torch.optim import Optimizer
 from torch.cuda.amp import GradScaler
+import re
 
 GPT2_TOKENIZER = tiktoken.get_encoding("gpt2")
 
@@ -91,48 +92,98 @@ def in_quotes_feature(
     )
 
 @jaxtyped(typechecker=beartype)
-def in_quotes_feature_demian(
+def in_quotes_feature_optimized(
         tokens: Int[Tensor, "batch seq_len"],
         tokenizer: Tokenizer = GPT2_TOKENIZER,
         qmark_in_quote: bool = False
 ) -> BinaryFeatureExtractorOutput:
-    batch_size,seq_len = tokens.shape
-    texts : List[List[str]] = __detokenize(tokens, tokenizer)
-
-    assert len(texts) == batch_size and len(texts[0]) == seq_len
-
-    quote_features: list[list[bool]] = []
-
-    for text in texts:
-
-        quote_feature: list[bool] = []
-        inside_quote: bool = False # assume we arent in a quote to start
-
-        for i, token in enumerate(text):
-            if i == 0 and token[0] == '"':
-                # we don't know if it is a start/end quote so just ignore it
-                continue
-            if '"' in token:
-                # token[0] == '."'
-                if token[0] == '"':
-                    # quote is at beginning of token so check previous token
-                    is_start_quote = text[i-1][-1] in [' ', '\n', '\t']
-                else:
-                    quote_index = token.index('"')
-                    is_start_quote = token[quote_index-1] in [' ', '\n', '\t']
-                if is_start_quote:
-                    quote_feature.extend([False] * ((i + int(not qmark_in_quote)) - len(quote_feature)))
-                else:
-                    quote_feature.extend([True] * ((i + int(qmark_in_quote)) - len(quote_feature)))
-                inside_quote = is_start_quote
-        # Handle trailing tokens after the last quote
-        quote_feature.extend([inside_quote] * (len(text) - len(quote_feature)))
-        quote_features.append(quote_feature)
-
+    batch_size, seq_len = tokens.shape
+    
+    # Pre-allocation on device for better performance
+    features = torch.zeros((batch_size, seq_len), device=tokens.device)
+    
+    # Process in smaller batches to avoid OOM
+    batch_size_process = min(batch_size, 16)  # Process 16 sequences at a time
+    
+    for start_idx in range(0, batch_size, batch_size_process):
+        end_idx = min(start_idx + batch_size_process, batch_size)
+        batch_tokens = tokens[start_idx:end_idx]
+        
+        # Decode all tokens in this batch at once
+        batch_texts = [tokenizer.decode(seq.tolist()) for seq in batch_tokens]
+        
+        # Process each sequence in the batch
+        for i, text in enumerate(batch_texts):
+            # Use regex for quote detection (much faster than character-by-character)
+            in_quotes = []
+            quote_positions = [m.start() for m in re.finditer('"', text)]
+            
+            if len(quote_positions) % 2 == 0:  # Even number of quotes
+                for j in range(0, len(quote_positions), 2):
+                    if j+1 < len(quote_positions):
+                        start_pos = quote_positions[j]
+                        end_pos = quote_positions[j+1]
+                        for k in range(start_pos + 1, end_pos):
+                            in_quotes.append(k)
+            
+            # Map character positions back to token positions
+            # This mapping is approximate but much faster
+            char_to_token = {}
+            total_chars = 0
+            for t_idx, token_id in enumerate(batch_tokens[i]):
+                token_text = tokenizer.decode([token_id.item()])
+                token_len = len(token_text)
+                for c in range(token_len):
+                    char_to_token[total_chars + c] = t_idx
+                total_chars += token_len
+            
+            # Set features based on character positions
+            for pos in in_quotes:
+                if pos in char_to_token:
+                    features[start_idx + i, char_to_token[pos]] = 1.0
+    
+    # Return both texts (for compatibility) and features
+    texts = __detokenize(tokens, tokenizer)
+    
     return BinaryFeatureExtractorOutput(
         text=texts,
         tokens=tokens,
-        features=torch.tensor(quote_features, device=tokens.device, dtype=torch.float),
+        features=features,
+    )
+
+def fast_in_quotes_feature(tokens, tokenizer=GPT2_TOKENIZER):
+    """Ultra-fast approximation of quote detection using pure tensor operations"""
+    batch_size, seq_len = tokens.shape
+    
+    # Pre-allocate on device
+    features = torch.zeros((batch_size, seq_len), device=tokens.device)
+    
+    # Find quote token ID (34 in GPT2 tokenizer)
+    quote_token_id = 34  # " character token ID in GPT2
+    
+    # Find all quote positions using tensor operations
+    quote_positions = (tokens == quote_token_id)
+    
+    # Process each sequence in batch using cumulative sum trick
+    for i in range(batch_size):
+        # Get quote positions for this sequence
+        seq_quotes = quote_positions[i]
+        
+        # Use cumulative sum to track inside/outside state (1s inside quotes, 0s outside)
+        # This toggles between 0/1 at each quote position
+        inside_quote = torch.cumsum(seq_quotes, dim=0) % 2
+        
+        # Set feature values - we'll consider being inside quotes only (not the quote marks themselves)
+        # So we shift the mask by one position
+        if seq_quotes.any():
+            # Set everything after first quote
+            first_quote = seq_quotes.argmax()
+            features[i, first_quote+1:] = inside_quote[first_quote:-1]
+    
+    return BinaryFeatureExtractorOutput(
+        text=None,  # Skip text decoding completely
+        tokens=tokens,
+        features=features,
     )
 
 in_quotes_no_qmark_feature: FeatureExtractor = lambda tokens, tokenizer: in_quotes_feature(tokens, tokenizer, qmark_in_quote=False)
@@ -160,7 +211,7 @@ def get_token_str_from_token_idx(tokens: Int[Tensor, "seq_len"]) -> List[str]:
 
 
 @jaxtyped(typechecker=beartype)
-def display_features_from_tokens(tokens: Int[Tensor, "seq_len"], tokenizer: Tokenizer = GPT2_TOKENIZER, feature_extractor: FeatureExtractor = in_quotes_feature_demian) -> None:
+def display_features_from_tokens(tokens: Int[Tensor, "seq_len"], tokenizer: Tokenizer = GPT2_TOKENIZER, feature_extractor: FeatureExtractor = in_quotes_feature_optimized) -> None:
     seq_len = tokens.shape[0]
     text,_, quote_features_tensor = feature_extractor(tokens.unsqueeze(dim=0), tokenizer)
     assert len(text) == 1 and len(text[0]) == seq_len
