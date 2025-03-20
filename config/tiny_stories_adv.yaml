@@ -18,10 +18,10 @@ wandb_run_name: 'mini-gpt-adversarial'
 # Dataset config
 dataset: 'tiny_stories'
 compile: true
-gradient_accumulation_steps: 8
+gradient_accumulation_steps: 2
 use_gradient_checkpointing: false
 auto_tune_batch_size: false
-batch_size: 128
+batch_size: 16
 block_size: 256
 dtype: 'bfloat16'
 
@@ -47,7 +47,7 @@ train_model: true
 probe_type: 'linear'
 probe_learning_rate: 1e-3
 lambda_adversarial: 1e-1
-phi_probe_steps_per_model_update: 1
+phi_probe_steps_per_model_update: 10
 train_adversarially: true
 
 # Initialization

@@ -68,9 +68,13 @@ class CausalSelfAttention(nn.Module):
         # Try Flash Attention 2 first (fastest)
         try:
             from flash_attn import flash_attn_func
-            q_fa = q.transpose(1, 2).contiguous()  # [B, T, H, D]
-            k_fa = k.transpose(1, 2).contiguous()  # [B, T, H, D]
-            v_fa = v.transpose(1, 2).contiguous()  # [B, T, H, D]
+            # Explicitly cast to bfloat16 or float16 based on availability
+            dtype_for_flash = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+            
+            # Cast the tensors to the appropriate dtype
+            q_fa = q.transpose(1, 2).contiguous().to(dtype=dtype_for_flash)
+            k_fa = k.transpose(1, 2).contiguous().to(dtype=dtype_for_flash)
+            v_fa = v.transpose(1, 2).contiguous().to(dtype=dtype_for_flash)
             
             # Flash attention with causal mask
             y_fa = flash_attn_func(
@@ -78,9 +82,11 @@ class CausalSelfAttention(nn.Module):
                 dropout_p=self.dropout if self.training else 0.0,
                 causal=True
             )
-            attention_output = y_fa.transpose(1, 2).reshape(B, T, C)
+            attention_output = y_fa.transpose(1, 2).reshape(B, T, C).to(dtype=x.dtype)
         except (ImportError, RuntimeError) as e:
-            pass
+            # Print helpful message
+            print(f"Flash Attention error (falling back to default attention): {e}")
+            attention_output = None
         
         # If flash attention failed, try PyTorch's implementation
         if attention_output is None and self.flash:

@@ -59,6 +59,8 @@ def main():
 
     if not hasattr(config, 'gradient_accumulation_steps'):
         config.gradient_accumulation_steps = 1
+    if not hasattr(config, 'phi_probe_steps_per_model_update'):
+        config.phi_probe_steps_per_model_update = 1
     
     # Set device
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -280,15 +282,30 @@ def main():
                     probe_cluster.zero_grad_probes()
         timer.end('backward_pass')
         
-        # Update probes occasionally
+        # Update probes based on phi_probe_steps_per_model_update
         timer.start('probe_update')
-        if config.train_probes and not config.train_adversarially and iter_num % 10 == 0:
+        if config.train_probes and config.train_adversarially:
             # Simple probe update with detached activations
             with torch.no_grad():
                 detached_activations = [act.detach() for act in activations]
             
-            # Update probes
-            probe_cluster.update_probes(detached_activations, probe_targets)
+            # Update probes multiple times per model update
+            for _ in range(config.phi_probe_steps_per_model_update):
+                # Update probes with current batch
+                probe_cluster.update_probes(
+                    detached_activations,
+                    probe_targets,
+                    scaler=scaler if config.dtype == 'float16' else None
+                )
+                
+                # Get a new batch for next probe update if not the last one
+                if _ < config.phi_probe_steps_per_model_update - 1:
+                    X_new, Y_new, probe_targets_new = get_batch_bound('train')
+                    with torch.no_grad():
+                        # Get new activations without recomputing gradients
+                        _, _, new_activations = model(X_new, Y_new, use_checkpoint=config.use_gradient_checkpointing)
+                        detached_activations = [act.detach() for act in new_activations]
+                    probe_targets = probe_targets_new
         timer.end('probe_update')
         
         # Calculate timing
