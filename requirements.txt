@@ -9,3 +9,4 @@ jaxtyping
 beartype
 matplotlib
 typeguard
+colorama

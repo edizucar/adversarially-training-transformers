@@ -57,9 +57,9 @@ class CausalSelfAttention(nn.Module):
         q, k, v = qkv.chunk(3, dim=2)
         
         # Reshape for attention computation
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        q = q.view(B, T, self.n_head, C // self.n_head)
+        k = k.view(B, T, self.n_head, C // self.n_head)
+        v = v.view(B, T, self.n_head, C // self.n_head)
         
         # Try flash-attention first, then PyTorch's implementation, then manual
         # To ensure the right implementation is used
@@ -72,9 +72,9 @@ class CausalSelfAttention(nn.Module):
             dtype_for_flash = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
             
             # Cast the tensors to the appropriate dtype
-            q_fa = q.transpose(1, 2).contiguous().to(dtype=dtype_for_flash)
-            k_fa = k.transpose(1, 2).contiguous().to(dtype=dtype_for_flash)
-            v_fa = v.transpose(1, 2).contiguous().to(dtype=dtype_for_flash)
+            q_fa = q.contiguous().to(dtype=dtype_for_flash)
+            k_fa = k.contiguous().to(dtype=dtype_for_flash)
+            v_fa = v.contiguous().to(dtype=dtype_for_flash)
             
             # Flash attention with causal mask
             y_fa = flash_attn_func(
@@ -90,6 +90,9 @@ class CausalSelfAttention(nn.Module):
         
         # If flash attention failed, try PyTorch's implementation
         if attention_output is None and self.flash:
+            q = q.transpose(1, 2)
+            k = k.transpose(1, 2)
+            v = v.transpose(1, 2)
             try:
                 y = torch.nn.functional.scaled_dot_product_attention(
                     q, k, v, 
@@ -99,7 +102,8 @@ class CausalSelfAttention(nn.Module):
                 )
                 attention_output = y.transpose(1, 2).reshape(B, T, C)
             except Exception:
-                pass
+                print("Flash Attention error (falling back to default attention):")
+                attention_output = None
             
         # If both failed, use manual implementation
         if attention_output is None:
@@ -221,15 +225,15 @@ class GPT(nn.Module):
         tok_emb = self.transformer.wte(idx)
         pos_emb = self.transformer.wpe(pos)
         x = self.transformer.drop(tok_emb + pos_emb)
+
+        def create_custom_forward(module):
+            def custom_forward(*inputs):
+                return module(*inputs)
+            return custom_forward
         
         if use_checkpoint and self.training:
             # Use gradient checkpointing for transformer blocks
-            for i, block in enumerate(self.transformer.h):
-                def create_custom_forward(module):
-                    def custom_forward(*inputs):
-                        return module(*inputs)
-                    return custom_forward
-                
+            for i, block in enumerate(self.transformer.h):                
                 # Apply checkpointing to save memory during backward pass
                 x_temp = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(block),

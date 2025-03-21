@@ -76,6 +76,9 @@ class TrainingConfig:
     world_size: int = 1
     master_process: bool = True
     seed_offset: int = 0
+
+    # Debugging
+    debug_data: bool = False
     
     def __post_init__(self):
         """Adjust settings and derive values after initialization"""

@@ -71,41 +71,130 @@ class TimingTracker:
         print(f"\nTotal tracked time: {total_time:.2f} seconds")
         return stats
 
-def fast_in_quotes_feature(tokens, tokenizer=GPT2_TOKENIZER):
-    """Ultra-fast approximation of quote detection using pure tensor operations"""
-    batch_size, seq_len = tokens.shape
-    device = tokens.device
-    
-    # Pre-allocate on device
-    features = torch.zeros((batch_size, seq_len), device=device)
-    
-    # Find quote token ID (34 in GPT2 tokenizer)
-    quote_token_id = 34  # " character token ID in GPT2
-    quote_positions = (tokens == quote_token_id)
+def odd_quotes_in_text(text):
+    """Find examples with an odd number of quotation marks."""
+    quote_count = text.count('"')
+    if quote_count % 2 != 0:
+        return True
+    return False
 
-    # Vectorized version that avoids loops
-    # Create cumulative sums for all sequences at once
-    quote_counts = torch.cumsum(quote_positions.to(torch.float), dim=1)
+def num_quotes_in_token(token):
+    """Return the number of quotation marks in a token using just its ID"""
+    TOKENS_WITH_QUOTES = {
+        1: 1,366: 1, 526: 1, 553: 1, 1298: 1, 1600: 1, 1701: 1, 1911: 1, 2404: 2, 2430: 2, 2474: 1, 2625: 1, 4895: 1, 4943: 1, 5320: 1, 5855: 1, 7203: 1, 7879: 1, 8172: 1, 8351: 2, 8762: 1,
+        8973: 1, 9063: 1, 9313: 1, 9962: 1, 11074: 1, 11097: 1, 11496: 1, 11919: 2, 12340: 1, 12813: 1, 12878: 1, 13018: 2, 13538: 2, 13984: 1, 14631: 1, 14692: 1, 15327: 1, 15341: 1, 15473: 2,
+        15931: 2, 16078: 1, 16725: 1, 17241: 1, 17553: 1, 17912: 1, 17971: 1, 18109: 1, 18161: 1, 19056: 1, 19570: 1, 19779: 1, 19990: 1, 20598: 1, 20662: 1, 21215: 1, 21387: 1, 22039: 1, 22135: 1,
+        23785: 1, 23984: 1, 24018: 1, 24426: 1, 24618: 1, 25113: 1, 25698: 1, 25719: 1, 26033: 1, 26214: 1, 26358: 2, 26700: 1, 26793: 1, 26989: 1, 27071: 1, 27267: 1, 27444: 1, 27896: 1, 29225: 1,
+        29368: 1, 29653: 1, 30478: 1, 30487: 1, 30543: 1, 30629: 1, 30823: 1, 30827: 1, 30866: 1, 32047: 1, 32203: 2, 32509: 2, 33116: 1, 33151: 2, 33172: 1, 33283: 1, 33490: 1, 34171: 2, 34607: 1,
+        34713: 4, 35379: 1, 35713: 1, 35922: 1, 36521: 1, 36786: 1, 37082: 1, 37160: 1, 37227: 3, 37811: 3, 38214: 1, 39658: 1, 40264: 1, 40484: 1, 40754: 1, 41424: 2, 42501: 1, 42720: 1, 42785: 2,
+        42911: 1, 42924: 1, 43634: 1, 43825: 1, 44212: 1, 44388: 1, 45144: 1, 45434: 1, 46385: 1, 47182: 4, 48219: 1, 48220: 1, 48774: 1, 49296: 1, 50248: 1
+    }
+    return TOKENS_WITH_QUOTES.get(token, 0)
     
-    # Mask for valid positions (after first quote in each sequence)
-    first_quote_pos = torch.argmax((quote_positions).to(torch.float), dim=1)
-    valid_mask = torch.arange(seq_len, device=device).unsqueeze(0) > first_quote_pos.unsqueeze(1)
+def odd_quotes_in_tokens(tokens):
+    """Find examples with an odd number of quotation marks."""
+    TOKENS_WITH_QUOTES = {
+        1: 1,366: 1, 526: 1, 553: 1, 1298: 1, 1600: 1, 1701: 1, 1911: 1, 2404: 2, 2430: 2, 2474: 1, 2625: 1, 4895: 1, 4943: 1, 5320: 1, 5855: 1, 7203: 1, 7879: 1, 8172: 1, 8351: 2, 8762: 1,
+        8973: 1, 9063: 1, 9313: 1, 9962: 1, 11074: 1, 11097: 1, 11496: 1, 11919: 2, 12340: 1, 12813: 1, 12878: 1, 13018: 2, 13538: 2, 13984: 1, 14631: 1, 14692: 1, 15327: 1, 15341: 1, 15473: 2,
+        15931: 2, 16078: 1, 16725: 1, 17241: 1, 17553: 1, 17912: 1, 17971: 1, 18109: 1, 18161: 1, 19056: 1, 19570: 1, 19779: 1, 19990: 1, 20598: 1, 20662: 1, 21215: 1, 21387: 1, 22039: 1, 22135: 1,
+        23785: 1, 23984: 1, 24018: 1, 24426: 1, 24618: 1, 25113: 1, 25698: 1, 25719: 1, 26033: 1, 26214: 1, 26358: 2, 26700: 1, 26793: 1, 26989: 1, 27071: 1, 27267: 1, 27444: 1, 27896: 1, 29225: 1,
+        29368: 1, 29653: 1, 30478: 1, 30487: 1, 30543: 1, 30629: 1, 30823: 1, 30827: 1, 30866: 1, 32047: 1, 32203: 2, 32509: 2, 33116: 1, 33151: 2, 33172: 1, 33283: 1, 33490: 1, 34171: 2, 34607: 1,
+        34713: 4, 35379: 1, 35713: 1, 35922: 1, 36521: 1, 36786: 1, 37082: 1, 37160: 1, 37227: 3, 37811: 3, 38214: 1, 39658: 1, 40264: 1, 40484: 1, 40754: 1, 41424: 2, 42501: 1, 42720: 1, 42785: 2,
+        42911: 1, 42924: 1, 43634: 1, 43825: 1, 44212: 1, 44388: 1, 45144: 1, 45434: 1, 46385: 1, 47182: 4, 48219: 1, 48220: 1, 48774: 1, 49296: 1, 50248: 1
+    }
+    quote_count = sum(TOKENS_WITH_QUOTES.get(token, 0) for token in tokens)
+    if quote_count % 2 != 0:
+        return True
+    return False
+
+def in_quotes_feature_old(
+    tokens: torch.Tensor,
+    tokenizer: any = GPT2_TOKENIZER
+) -> BinaryFeatureExtractorOutput:
+    """
+    Detect tokens that are inside quotes or contain quotes.
     
-    # Apply the toggle using modulo operation (inside quotes = odd count)
-    inside_quotes = (quote_counts % 2).to(torch.float)
+    Args:
+        tokens: Batched token IDs [batch_size, seq_len]
+        tokenizer: The tokenizer used to encode the text
+        
+    Returns:
+        BinaryFeatureExtractorOutput with features indicating tokens inside quotes and quote tokens
+    """
+    features = torch.zeros_like(tokens, dtype=torch.float, device=tokens.device)
+    quote_counts = {}
     
-    # Shift by 1 position (we want inside the quotes, not the quote marks themselves)
-    shifted_inside = torch.zeros_like(inside_quotes, device=device)
-    shifted_inside[:, 1:] = inside_quotes[:, :-1]
+    for b in range(tokens.shape[0]):
+        in_quote = False
+        
+        for pos in range(tokens.shape[1]):
+            token_id = tokens[b, pos].item()
+            
+            # Get/compute quote count (with lazy caching)
+            if token_id not in quote_counts:
+                quote_counts[token_id] = num_quotes_in_token(token_id)
+            
+            # Mark if inside quotes or contains quotes
+            if in_quote or quote_counts[token_id] > 0:
+                features[b, pos] = 1.0
+            
+            # Toggle quote state for each quote in token
+            for _ in range(quote_counts[token_id]):
+                in_quote = not in_quote
     
-    # Apply valid mask - only count positions after first quote
-    features = shifted_inside * valid_mask.to(torch.float)
+    return BinaryFeatureExtractorOutput(text=None, tokens=tokens, features=features)
+
+def in_quotes_feature(
+    tokens: torch.Tensor,
+    tokenizer: any = GPT2_TOKENIZER
+) -> BinaryFeatureExtractorOutput:
+    """
+    Detect tokens inside quotes using regex on the detokenized text.
     
-    return BinaryFeatureExtractorOutput(
-        text=None,  # Skip text decoding for performance
-        tokens=tokens,
-        features=features,
-    )
+    Args:
+        tokens: Batched token IDs [batch_size, seq_len]
+        tokenizer: The tokenizer used to encode the text
+        
+    Returns:
+        BinaryFeatureExtractorOutput with features indicating tokens inside quotes
+    """
+    features = torch.zeros_like(tokens, dtype=torch.float, device=tokens.device)
+    
+    for b in range(tokens.shape[0]):
+        # Convert tokens to text
+        batch_tokens = tokens[b, :].tolist()
+        text = tokenizer.decode(batch_tokens)
+        
+        # Find character positions of all quotes
+        quote_positions = [i for i, char in enumerate(text) if char == '"']
+        char_in_quotes = [False] * len(text)
+        
+        # Mark characters between quote pairs
+        for i in range(0, len(quote_positions) - 1, 2):
+            if i + 1 < len(quote_positions):
+                start, end = quote_positions[i], quote_positions[i + 1]
+                for j in range(start, end + 1):  # Include the quotes
+                    char_in_quotes[j] = True
+        
+        # Map character positions back to tokens
+        char_pos = 0
+        for pos, token_id in enumerate(batch_tokens):
+            token_text = tokenizer.decode([token_id])
+            token_len = len(token_text)
+            
+            # Check if any character in this token's range is in quotes
+            in_quotes = False
+            for j in range(char_pos, min(char_pos + token_len, len(char_in_quotes))):
+                if char_in_quotes[j]:
+                    in_quotes = True
+                    break
+            
+            if in_quotes:
+                features[b, pos] = 1.0
+            
+            char_pos += token_len
+    
+    return BinaryFeatureExtractorOutput(text=None, tokens=tokens, features=features)
 
 def auto_tune_batch_size(
     model, config, ctx, optimizer, get_batch_fn, probe_cluster=None

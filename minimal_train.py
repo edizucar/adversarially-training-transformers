@@ -16,34 +16,51 @@ from collections import defaultdict
 from src.model import GPTConfig, GPT
 from src.config import TrainingConfig
 from src.probes import ProbeCluster
-from src.utils import TimingTracker, fast_in_quotes_feature, auto_tune_batch_size
+from src.utils import TimingTracker, in_quotes_feature, auto_tune_batch_size, odd_quotes_in_tokens
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a GPT model')
     parser.add_argument('config', type=str, help='Path to config file (YAML or Python)')
     return parser.parse_args()
 
-def get_batch(split, train_data, val_data, config, device):
+def get_batch(split, train_data, val_data, config, device, timer):
     """Optimized batch preparation with minimal overhead"""
     data = train_data if split == 'train' else val_data
-    
-    # Get random offsets for batch
-    ix = torch.randint(len(data) - config.block_size, (config.batch_size,))
     
     # Create single tensor and fill it - more efficient than individual conversions
     x = torch.zeros((config.batch_size, config.block_size), dtype=torch.long, device='cpu')
     y = torch.zeros((config.batch_size, config.block_size), dtype=torch.long, device='cpu')
-    
-    # Fill tensors (still has a loop but minimizes conversions)
-    for i, idx in enumerate(ix):
-        x[i] = torch.from_numpy(data[idx:idx+config.block_size].astype(np.int64))
-        y[i] = torch.from_numpy(data[idx+1:idx+1+config.block_size].astype(np.int64))
-    
+
+    timer.start('get_batch_loop')
+    for i in range(config.batch_size):
+        timer.start('get_batch_sample')
+        valid = False
+        attempts = 0
+        max_attempts = 10
+        while not valid and attempts < max_attempts:
+            idx = torch.randint(len(data) - config.block_size, (1,)).item()
+            tokens = data[idx:idx+config.block_size]
+            if not odd_quotes_in_tokens(tokens):
+                x[i] = torch.from_numpy(tokens.astype(np.int64))
+                y[i] = torch.from_numpy(data[idx+1:idx+1+config.block_size].astype(np.int64))
+                valid = True
+            attempts += 1
+        if not valid:
+            x[i] = torch.from_numpy(tokens.astype(np.int64))
+            y[i] = torch.from_numpy(data[idx+1:idx+1+config.block_size].astype(np.int64))
+        timer.end('get_batch_sample')
+    timer.end('get_batch_loop')
+
     # Move to device (single transfer)
+    timer.start('get_batch_to_device')
     x, y = x.to(device), y.to(device)
-    
-    probe_targets = fast_in_quotes_feature(x).features
-    
+    timer.end('get_batch_to_device')
+
+    # Compute probe targets
+    timer.start('get_batch_probe_targets')
+    probe_targets = in_quotes_feature(x).features
+    timer.end('get_batch_probe_targets')
+
     return x, y, probe_targets
 
 def main():
@@ -187,7 +204,7 @@ def main():
     # Create a local get_batch function bound to our data and config
     def get_batch_bound(split):
         timer.start('get_batch')
-        batch = get_batch(split, train_data, val_data, config, device)
+        batch = get_batch(split, train_data, val_data, config, device, timer)
         timer.end('get_batch')
         return batch
     
@@ -239,6 +256,16 @@ def main():
         timer.start('data_prep')
         X, Y, probe_targets = get_batch_bound('train')
         timer.end('data_prep')
+
+        # Print sample of first batch (only once at the start of training)
+        if iter_num == 0 and config.debug_data:
+            enc = tiktoken.get_encoding("gpt2")
+            print("\n=== Sample Batch Data ===")
+            print(f"X shape: {X.shape}, Y shape: {Y.shape}, probe_targets shape: {probe_targets.shape}")
+            print(f"\033[1mX sample:\033[0m\n{repr(enc.decode(X[0, :-1].tolist()))}")
+            print(f"\033[1mY sample:\033[0m\n{repr(enc.decode(Y[0, :-1].tolist()))}")
+            print(f"\033[1mprobe_targets sample:\033[0m\n{[(enc.decode([X[0, i].item()]), probe_targets[0, i].item()) for i in range(len(X[0, :-1]))]}".replace("), ", "),\n"))
+            print("=========================\n")
         
         # Forward pass
         timer.start('forward_pass')
