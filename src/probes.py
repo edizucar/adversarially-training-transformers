@@ -3,6 +3,7 @@ from torch import Tensor, nn
 import torch.nn.functional as F
 from torch.optim import Optimizer
 from torch.cuda.amp import GradScaler
+from jaxtyping import Float, Int, Bool, jaxtyped
 
 class LinearProbe(nn.Module):
     """Simple linear probe for feature detection"""
@@ -118,6 +119,9 @@ class ProbeCluster:
         """Set all probes to training mode"""
         for probe in self.probes:
             probe.train()
+    
+    def get_num_probes(self) -> Int:
+        return self.number_of_probes
 
     def compute_probe_losses(self, activations, targets):
         """

@@ -1,5 +1,5 @@
 # Output configuration
-source_dir: 'checkpoints/backup-checkpoint-24-02'
+source_dir: 'checkpoints/tiny_stories'
 dest_dir: 'checkpoints/tiny_stories_adv'
 max_iters: 2000
 eval_interval: 500
@@ -55,3 +55,4 @@ init_from: 'resume'
 
 # Debugging
 debug_data: false
+show_final_eval_on_stop: false

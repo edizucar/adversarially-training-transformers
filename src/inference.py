@@ -10,12 +10,12 @@ import numpy as np
 import torch
 from contextlib import nullcontext
 
-from src.model import GPTConfig, GPT
-from src.config import TrainingConfig
+from model import GPTConfig, GPT
+from config import TrainingConfig
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Run inference with a GPT model checkpoint')
-    parser.add_argument('--checkpoint', type=str, default="checkpoints/tiny_stories/ckpt.pt", required=True, help='Path to checkpoint file')
+    parser.add_argument('--checkpoint', type=str, default="../checkpoints/tiny_stories/ckpt.pt", required=True, help='Path to checkpoint file')
     parser.add_argument('--prompt', type=str, default="Once upon", help='Text prompt to start generation')
     parser.add_argument('--max_new_tokens', type=int, default=100, help='Maximum number of tokens to generate')
     parser.add_argument('--temperature', type=float, default=0.8, help='Sampling temperature')

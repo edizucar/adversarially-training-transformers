@@ -90,22 +90,57 @@ def test_quote_detection(quote_detector_fn, num_samples=10):
             story = dataset["train"][idx]["text"]
             quotes_match = re.search(r'[^"]{0,50}"[^"]{10,100}"[^"]{0,50}', story)
             sample_text = quotes_match.group(0) if quotes_match else story[:200] + ("..." if len(story) > 200 else "")
-            visualize_quotes(sample_text)
+            visualize_quotes(sample_text, tokenizer, quote_detector_fn)
     
     except Exception as e:
         print(f"Could not test on TinyStories dataset: {e}")
         print("You may need to install the datasets library: pip install datasets")
+
+def test_generation_speed(checkpoint_path, num_tokens=100, num_samples=5, temperature=0.4, top_k=50, top_p=0.9):
+    """
+    Test model token generation speed. Returns average tokens per second
+    """
+    from inference import load_model, setup_pytorch, encode_prompt, generate, decode_tokens
+
+    model, encoder = load_model(checkpoint_path, device="cuda")
+    seed = torch.randint(0, 1000000, (1,)).item()
+    ctx, _ = setup_pytorch(seed=seed, device_type="cuda")
+    prompt = "Once upon a time"
+    prompt_tokens = encode_prompt(prompt, encoder, "cuda")
+
+    speeds = []
+    
+    for i in range(num_samples):
+        start_time = perf_counter()
+        
+        generation = generate(model, prompt_tokens, num_tokens, temperature, top_k, top_p, "cuda", ctx)
+        if i == 0:
+            print(f"Sample output: {prompt}{decode_tokens(generation, encoder)}")
+        
+        elapsed = perf_counter() - start_time
+        tokens_per_second = num_tokens / elapsed
+        speeds.append(tokens_per_second)
+        
+        print(f"Run {i+1}: {tokens_per_second:.2f} tokens/sec")
+    
+    avg_speed = sum(speeds) / len(speeds)
+    print(f"Average: {avg_speed:.2f} tokens/sec")
+    
+    return avg_speed
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--quote_detector", action="store_true")
     parser.add_argument("--test_dataset_odd_quotes", action="store_true")
+    parser.add_argument("--test_generation_speed", action="store_true")
     args = parser.parse_args()
 
     if args.all or args.quote_detector:
         from utils import in_quotes_feature
         test_quote_detection(in_quotes_feature, num_samples=10)
-
     if args.all or args.test_dataset_odd_quotes:
         find_odd_quotes_in_dataset(dataset="roneneldan/TinyStories", text_field="text", full_text=True)
+    if args.all or args.test_generation_speed:
+        checkpoint_path = "../checkpoints/tiny_stories/ckpt.pt"
+        test_generation_speed(checkpoint_path)

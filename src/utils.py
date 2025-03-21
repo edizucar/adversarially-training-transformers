@@ -1,8 +1,13 @@
+import os
+import math
+import time
+import wandb
 import torch
 import tiktoken
+from contextlib import nullcontext
 from typing import NamedTuple
 from collections import defaultdict
-import time
+
 GPT2_TOKENIZER = tiktoken.get_encoding("gpt2")
 
 # Binary feature extractor output type
@@ -71,6 +76,46 @@ class TimingTracker:
         print(f"\nTotal tracked time: {total_time:.2f} seconds")
         return stats
 
+def get_batch(split, train_data, val_data, config, device, timer):
+    """Optimized batch preparation with minimal overhead"""
+    data = train_data if split == 'train' else val_data
+    
+    # Create single tensor and fill it - more efficient than individual conversions
+    x = torch.zeros((config.batch_size, config.block_size), dtype=torch.long, device='cpu')
+    y = torch.zeros((config.batch_size, config.block_size), dtype=torch.long, device='cpu')
+
+    timer.start('get_batch_loop')
+    for i in range(config.batch_size):
+        timer.start('get_batch_sample')
+        valid = False
+        attempts = 0
+        max_attempts = 10
+        while not valid and attempts < max_attempts:
+            idx = torch.randint(len(data) - config.block_size, (1,)).item()
+            tokens = data[idx:idx+config.block_size]
+            if not odd_quotes_in_tokens(tokens):
+                x[i] = torch.from_numpy(tokens.astype(np.int64))
+                y[i] = torch.from_numpy(data[idx+1:idx+1+config.block_size].astype(np.int64))
+                valid = True
+            attempts += 1
+        if not valid:
+            x[i] = torch.from_numpy(tokens.astype(np.int64))
+            y[i] = torch.from_numpy(data[idx+1:idx+1+config.block_size].astype(np.int64))
+        timer.end('get_batch_sample')
+    timer.end('get_batch_loop')
+
+    # Move to device (single transfer)
+    timer.start('get_batch_to_device')
+    x, y = x.to(device), y.to(device)
+    timer.end('get_batch_to_device')
+
+    # Compute probe targets
+    timer.start('get_batch_probe_targets')
+    probe_targets = in_quotes_feature(x).features
+    timer.end('get_batch_probe_targets')
+
+    return x, y, probe_targets
+
 def odd_quotes_in_text(text):
     """Find examples with an odd number of quotation marks."""
     quote_count = text.count('"')
@@ -107,7 +152,7 @@ def odd_quotes_in_tokens(tokens):
         return True
     return False
 
-def in_quotes_feature_old(
+def in_quotes_feature(
     tokens: torch.Tensor,
     tokenizer: any = GPT2_TOKENIZER
 ) -> BinaryFeatureExtractorOutput:
@@ -284,3 +329,368 @@ def auto_tune_batch_size(
     
     # Return the determined batch size
     return config.batch_size
+
+def estimate_loss(model, config, ctx, get_batch_fn, timer):
+    """Estimate loss on train and validation splits"""
+    out = {}
+    model.eval()
+    for split in ['train', 'val']:
+        losses = torch.zeros(config.eval_iters, device=config.device)
+        for k in range(config.eval_iters):
+            X, Y, _ = get_batch_fn(split)
+            with ctx:
+                _, loss, _ = model(X, Y)
+            losses[k] = loss.item()
+        out[split] = losses.mean()
+    model.train()
+    return out
+
+def estimate_probe_loss(model, probe_cluster, config, ctx, get_batch_fn, timer):
+    """Estimate loss for all probes"""
+    model.eval()
+    probe_cluster.set_eval_mode()  # Set probes to eval mode
+    out = {'train':{}, 'val':{}}
+    
+    for split in ['train', 'val']:
+        probe_losses = torch.zeros(config.eval_iters, probe_cluster.get_num_probes(), device=config.device)
+        probe_accuracies = torch.zeros(config.eval_iters, probe_cluster.get_num_probes(), device=config.device)
+        
+        for k in range(config.eval_iters):
+            X, Y, probe_targets = get_batch_fn(split) 
+            with ctx:
+                _, _, activations = model(X, Y)
+            
+            # Get losses for each probe
+            timer.start('compute_probe_losses')
+            losses = probe_cluster.compute_probe_losses(activations, probe_targets)
+            probe_losses[k] = torch.tensor([loss.item() for loss in losses], device=config.device)
+            timer.end('compute_probe_losses')
+            
+            # Get accuracies for each probe
+            timer.start('compute_probe_accuracies')
+            accs = probe_cluster.compute_accuracies(activations, probe_targets)
+            probe_accuracies[k] = torch.tensor(accs, device=config.device)
+            timer.end('compute_probe_accuracies')
+        
+        # Average over evaluation iterations
+        out[split]["loss"] = probe_losses.mean(dim=0).tolist()
+        out[split]["accuracy"] = probe_accuracies.mean(dim=0).tolist()
+
+    probe_cluster.set_train_mode()  # Set probes back to train mode
+    model.train()
+    return out
+
+def setup_environment(config, device_type):
+    """Set up training environment including device and precision settings."""
+    # Enable tensor cores and memory setting
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+    
+    # Setup dtype
+    if config.dtype == 'auto':
+        if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+            config.dtype = 'bfloat16'
+        elif torch.cuda.is_available():
+            config.dtype = 'float16'
+        else:
+            config.dtype = 'float32'
+    
+    if config.dtype == 'float16':
+        ptdtype = torch.float16
+    elif config.dtype == 'bfloat16':
+        ptdtype = torch.bfloat16
+    else:
+        ptdtype = torch.float32
+    
+    ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
+    
+    return config, ctx, ptdtype
+
+def load_dataset(data_dir):
+    """Load training and validation datasets."""
+    train_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
+    val_data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
+    return train_data, val_data
+
+def get_vocab_size(config, data_dir, device):
+    """Determine vocabulary size from checkpoint or metadata."""
+    vocab_size = None
+    
+    if config.init_from == 'resume':
+        ckpt_path = os.path.join(config.source_dir, 'ckpt.pt')
+        checkpoint = torch.load(ckpt_path, map_location=device)
+        
+        if 'model_args' in checkpoint:
+            model_args_dict = checkpoint['model_args']
+            vocab_size = model_args_dict.get('vocab_size', None)
+        else:
+            # Try to infer from weights
+            for k in checkpoint['model'].keys():
+                if k == 'transformer.wte.weight' or k == '_orig_mod.transformer.wte.weight':
+                    vocab_size = checkpoint['model'][k].shape[0]
+                    print(f"Inferred vocab_size = {vocab_size} from checkpoint weights")
+                    break
+        return vocab_size, checkpoint
+    else:
+        # Find vocab size from meta.pkl
+        meta_path = os.path.join(data_dir, 'meta.pkl')
+        if os.path.exists(meta_path):
+            import pickle
+            with open(meta_path, 'rb') as f:
+                meta = pickle.load(f)
+            vocab_size = meta['vocab_size']
+        return vocab_size, None
+
+def load_model_from_checkpoint(model, checkpoint):
+    """Load model state from checkpoint and fix key prefixes if needed."""
+    state_dict = checkpoint['model']
+    unwanted_prefix = '_orig_mod.'
+    
+    for k in list(state_dict.keys()):
+        if k.startswith(unwanted_prefix):
+            state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
+    
+    model.load_state_dict(state_dict)
+    
+    iter_num = checkpoint.get('iter_num', 0)
+    best_val_loss = checkpoint.get('best_val_loss', float('inf'))
+    
+    return model, iter_num, best_val_loss
+
+def initialize_probes(config, device, checkpoint=None):
+    """Initialize probe cluster if needed."""
+    if not config.train_probes:
+        return None
+        
+    from probes import ProbeCluster
+    
+    probe_cluster = ProbeCluster(
+        n_layer=config.n_layer,
+        d_model=config.n_embd,
+        learning_rate=config.probe_learning_rate,
+        device=device
+    )
+
+    # Load probe cluster state if available
+    if checkpoint is not None and 'probe_state' in checkpoint:
+        probe_cluster.load_state_dict(checkpoint['probe_state'])
+        
+    return probe_cluster
+
+def setup_training_components(model, config, device_type):
+    """Set up optimizer, scaler, and other training components."""
+    # Compile model if requested and available
+    if config.compile and hasattr(torch, 'compile') and device_type == 'cuda':
+        model = torch.compile(model)
+        print("Model compiled with torch.compile()")
+    
+    # Configure optimizer
+    optimizer = model.configure_optimizers(
+        weight_decay=config.weight_decay,
+        learning_rate=config.learning_rate,
+        betas=(config.beta1, config.beta2),
+        device_type=device_type
+    )
+    
+    # Create gradient scaler for mixed precision
+    scaler = torch.amp.GradScaler(enabled=(config.dtype == 'float16'))
+    
+    return model, optimizer, scaler
+
+def create_batch_getter(train_data, val_data, config, device, timer, get_batch_fn):
+    """Create a bound get_batch function for easy reuse."""
+    def get_batch_bound(split):
+        timer.start('get_batch')
+        batch = get_batch_fn(split, train_data, val_data, config, device, timer)
+        timer.end('get_batch')
+        return batch
+    return get_batch_bound
+
+def update_learning_rate(optimizer, config, iter_num):
+    """Update learning rate according to schedule."""
+    if not config.decay_lr:
+        return config.learning_rate
+        
+    # Linear warmup then cosine decay
+    if iter_num < config.warmup_iters:
+        lr = config.learning_rate * iter_num / config.warmup_iters
+    else:
+        decay_ratio = (iter_num - config.warmup_iters) / (config.lr_decay_iters - config.warmup_iters)
+        decay_ratio = min(decay_ratio, 1.0)
+        lr = config.min_lr + 0.5 * (config.learning_rate - config.min_lr) * (1.0 + math.cos(math.pi * decay_ratio))
+    
+    # Set learning rate with gradient accumulation adjustment
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr * config.gradient_accumulation_steps
+        
+    return lr
+
+def save_checkpoint(model, optimizer, model_args, iter_num, best_val_loss, config, probe_cluster=None, final=False):
+    """Save model checkpoint."""
+    checkpoint = {
+        'model': model.state_dict(),
+        'optimizer': optimizer.state_dict(),
+        'model_args': model_args,
+        'iter_num': iter_num,
+        'best_val_loss': best_val_loss,
+    }
+
+    if final:
+        checkpoint['config'] = vars(config)
+
+    if probe_cluster is not None:
+        checkpoint['probe_state'] = probe_cluster.state_dict()
+    
+    filename = 'final_ckpt.pt' if final else 'ckpt.pt'
+    filepath = os.path.join(config.dest_dir, filename)
+    print(f"Saving checkpoint to {filepath}")
+    torch.save(checkpoint, filepath)
+
+def setup_wandb(config):
+    """Initialize wandb logging."""
+    wandb.init(
+        project=config.wandb_project,
+        name=config.wandb_run_name,
+        config=vars(config)
+    )
+
+    wandb.define_metric("iteration", step_metric="iteration")
+    wandb.define_metric("train/*", step_metric="iteration")
+    wandb.define_metric("val/*", step_metric="iteration")
+
+def log_evaluation_results(eval_loss, probe_losses, iter_num, lr, config):
+    """Log evaluation results to console and wandb."""
+    print(f"Step {iter_num}: train loss {eval_loss['train']:.4f}, val loss {eval_loss['val']:.4f}")
+
+    if not config.wandb_log:
+        return
+        
+    log_dict = {
+        "iteration": iter_num,
+        "train/model_loss": eval_loss['train'],
+        "val/model_loss": eval_loss['val'],
+        "train/lr": lr,
+    }
+
+    if probe_losses:
+        print("Probe losses and accuracies:")
+        for split in ['train', 'val']:
+            for stat in probe_losses[split]:
+                for i, value in enumerate(probe_losses[split][stat]):
+                    probe_type = 'attn' if i % 2 == 0 else 'MLP'
+                    layer = i // 2
+                    print(f"{split} probe {i} ({probe_type}-{layer}) {stat}: {value:.4f}")
+            
+                    if config.wandb_log:
+                        log_dict[f"{split}/probe-{stat}-{probe_type}-{layer}"] = value
+    
+    if config.wandb_log:
+        wandb.log(log_dict)
+
+def debug_print_batch(X, Y, probe_targets):
+    """Print sample batch data for debugging."""        
+    enc = tiktoken.get_encoding("gpt2")
+    print("\n=== Sample Batch Data ===")
+    print(f"X shape: {X.shape}, Y shape: {Y.shape}, probe_targets shape: {probe_targets.shape}")
+    print(f"\033[1mX sample:\033[0m\n{repr(enc.decode(X[0, :-1].tolist()))}")
+    print(f"\033[1mY sample:\033[0m\n{repr(enc.decode(Y[0, :-1].tolist()))}")
+    print(f"\033[1mprobe_targets sample:\033[0m\n{[(enc.decode([X[0, i].item()]), probe_targets[0, i].item()) for i in range(len(X[0, :-1]))]}".replace("), ", "),\n"))
+    print("=========================\n")
+
+def run_single_training_step(model, probe_cluster, optimizer, scaler, 
+                           X, Y, probe_targets, config, ctx, iter_num, get_batch_fn):
+    """Execute a single training step."""
+    # Zero gradients if first iteration
+    if iter_num == 0:
+        optimizer.zero_grad(set_to_none=True)
+        if config.train_probes:
+            probe_cluster.zero_grad_probes()
+    
+    # Forward pass
+    with ctx:
+        logits, transformer_loss, activations = model(X, Y, use_checkpoint=config.use_gradient_checkpointing)
+        
+        # Process probes and adversarial training
+        if config.train_probes and config.train_adversarially:
+            # Compute probe losses directly
+            probe_losses = probe_cluster.compute_probe_losses(activations, probe_targets)
+            adversarial_loss = -sum(probe_losses) * config.lambda_adversarial
+            total_loss = transformer_loss + adversarial_loss
+        else:
+            total_loss = transformer_loss
+    
+    # Backward pass
+    if config.train_model:
+        scaler.scale(total_loss).backward()
+
+        if (iter_num + 1) % config.gradient_accumulation_steps == 0:
+            # Gradient clipping
+            if config.grad_clip != 0.0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
+        
+            # Optimizer step
+            scaler.step(optimizer)
+            scaler.update()
+
+            # Zero gradients
+            optimizer.zero_grad(set_to_none=True)
+            if config.train_probes:
+                probe_cluster.zero_grad_probes()
+    
+    # Update probes based on phi_probe_steps_per_model_update
+    if config.train_probes and config.train_adversarially:
+        update_probes(model, probe_cluster, activations, probe_targets, 
+                      config, scaler, get_batch_fn)
+                
+    return transformer_loss.item()
+
+def update_probes(model, probe_cluster, activations, probe_targets, 
+                 config, scaler, get_batch_fn):
+    """Update probes with current activations and possibly new batches."""
+    # Simple probe update with detached activations
+    with torch.no_grad():
+        detached_activations = [act.detach() for act in activations]
+    
+    # Update probes multiple times per model update
+    for i in range(config.phi_probe_steps_per_model_update):
+        # Update probes with current batch
+        probe_cluster.update_probes(
+            detached_activations,
+            probe_targets,
+            scaler=scaler if config.dtype == 'float16' else None
+        )
+        
+        # Get a new batch for next probe update if not the last one
+        if i < config.phi_probe_steps_per_model_update - 1:
+            X_new, Y_new, probe_targets_new = get_batch_fn('train')
+            with torch.no_grad():
+                # Get new activations without recomputing gradients
+                _, _, new_activations = model(X_new, Y_new, use_checkpoint=config.use_gradient_checkpointing)
+                detached_activations = [act.detach() for act in new_activations]
+            probe_targets = probe_targets_new
+
+def run_evaluation(model, probe_cluster, config, ctx, get_batch_fn, timer):
+    """Run model and probe evaluation."""
+    timer.start('evaluation')
+    eval_loss = estimate_loss(model, config, ctx, get_batch_fn, timer)
+    timer.end('evaluation')
+    
+    probe_losses = None
+    if config.train_probes:
+        timer.start('probe_evaluation')
+        probe_losses = estimate_probe_loss(model, probe_cluster, config, ctx, get_batch_fn, timer)
+        timer.end('probe_evaluation')
+    
+    return eval_loss, probe_losses
+
+def setup_signal_handler():
+    """Create and return a signal handler for graceful interruption."""
+    stop_requested = [False]  # Use list for mutable state
+    
+    def signal_handler(sig, frame):
+        stop_requested[0] = True
+        print("Stopping training...")
+        
+    return stop_requested, signal_handler

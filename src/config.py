@@ -79,7 +79,7 @@ class TrainingConfig:
 
     # Debugging
     debug_data: bool = False
-    
+    show_final_eval_on_stop: bool = False
     def __post_init__(self):
         """Adjust settings and derive values after initialization"""
         # Auto-detect device if needed
