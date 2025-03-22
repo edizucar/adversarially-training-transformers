@@ -467,6 +467,9 @@ def update_learning_rate(optimizer, config, iter_num):
 
 def save_checkpoint(model, optimizer, model_args, iter_num, best_val_loss, config, probe_cluster=None, final=False):
     """Save model checkpoint."""
+    if isinstance(model_args, object) and not isinstance(model_args, dict):
+        model_args = {k: v for k, v in vars(model_args).items()}
+
     checkpoint = {
         'model': model.state_dict(),
         'optimizer': optimizer.state_dict(),
@@ -476,12 +479,12 @@ def save_checkpoint(model, optimizer, model_args, iter_num, best_val_loss, confi
     }
 
     if final:
-        checkpoint['config'] = vars(config)
+        checkpoint['config'] = vars(config) if hasattr(config, '__dict__') else dict(config)
 
     if probe_cluster is not None:
         checkpoint['probe_state'] = probe_cluster.state_dict()
     
-    filename = 'final_ckpt.pt' if final else 'ckpt.pt'
+    filename = 'ckpt.pt' if final else 'ckpt_intermediate.pt'
     filepath = os.path.join(config.dest_dir, filename)
     print(f"Saving checkpoint to {filepath}")
     torch.save(checkpoint, filepath)
