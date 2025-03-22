@@ -75,7 +75,8 @@ def main():
         model, iter_num, best_val_loss = load_model_from_checkpoint(model, checkpoint)
     
     # Intialize probes if needed
-    probe_cluster = initialize_probes(config, device, checkpoint)
+    if config.train_probes:
+        probe_cluster = initialize_probes(config, device, checkpoint, ProbeCluster)
     
     # Setup training components
     optimizer, scaler = setup_training_components(model, config, device_type)

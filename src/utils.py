@@ -4,6 +4,7 @@ import time
 import wandb
 import torch
 import tiktoken
+import numpy as np
 from contextlib import nullcontext
 from typing import NamedTuple
 from collections import defaultdict
@@ -458,12 +459,8 @@ def load_model_from_checkpoint(model, checkpoint):
     
     return model, iter_num, best_val_loss
 
-def initialize_probes(config, device, checkpoint=None):
+def initialize_probes(config, device, checkpoint=None, ProbeCluster=None):
     """Initialize probe cluster if needed."""
-    if not config.train_probes:
-        return None
-        
-    from probes import ProbeCluster
     
     probe_cluster = ProbeCluster(
         n_layer=config.n_layer,
