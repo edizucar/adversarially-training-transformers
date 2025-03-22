@@ -9,14 +9,7 @@ import argparse
 from src.model import GPTConfig, GPT
 from src.config import TrainingConfig
 from src.probes import ProbeCluster
-from src.utils import (
-    TimingTracker, get_batch, in_quotes_feature, auto_tune_batch_size, odd_quotes_in_tokens,
-    estimate_loss, estimate_probe_loss, setup_environment, load_dataset,
-    get_vocab_size, load_model_from_checkpoint, initialize_probes,
-    setup_training_components, create_batch_getter, update_learning_rate,
-    save_checkpoint, setup_wandb, log_evaluation_results, debug_print_batch,
-    run_single_training_step, run_evaluation, setup_signal_handler
-)
+import src.utils as utils
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a GPT model')
@@ -38,21 +31,21 @@ def main():
         config.wandb_log = False
     
     # Initialize timing tracker
-    timer = TimingTracker()
+    timer = utils.TimingTracker()
 
     # Set device
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     device_type = 'cuda' if 'cuda' in device else 'cpu'
     config.device = device
     
-    config, ctx, ptdtype = setup_environment(config, device_type)
+    config, ctx, ptdtype = utils.setup_environment(config, device_type)
     
     # Load dataset
     data_dir = os.path.join('data', config.dataset)
-    train_data, val_data = load_dataset(data_dir)
+    train_data, val_data = utils.load_dataset(data_dir)
     
     # Get vocab size and maybe checkpoint
-    vocab_size, checkpoint = get_vocab_size(config, data_dir, device)
+    vocab_size, checkpoint = utils.get_vocab_size(config, data_dir, device)
     
     # Create model
     model_args = GPTConfig(
@@ -72,28 +65,28 @@ def main():
     best_val_loss = float('inf')
 
     if config.init_from == 'resume' and checkpoint is not None:
-        model, iter_num, best_val_loss = load_model_from_checkpoint(model, checkpoint)
+        model, iter_num, best_val_loss = utils.load_model_from_checkpoint(model, checkpoint, config.train_adversarially)
     
     # Intialize probes if needed
     if config.train_probes:
-        probe_cluster = initialize_probes(config, device, checkpoint, ProbeCluster)
+        probe_cluster = utils.initialize_probes(config, device, checkpoint, ProbeCluster)
     
     # Setup training components
-    optimizer, scaler = setup_training_components(model, config, device_type)
+    model, optimizer, scaler = utils.setup_training_components(model, config, device_type)
     
     # Create batch getter
-    get_batch_bound = create_batch_getter(train_data, val_data, config, device, timer, get_batch)
+    get_batch_bound = utils.create_batch_getter(train_data, val_data, config, device, timer, utils.get_batch)
     
     # Tune batch size if requested
     if config.auto_tune_batch_size:
-        config.batch_size = auto_tune_batch_size(
+        config.batch_size = utils.auto_tune_batch_size(
             model, config, ctx, optimizer, get_batch_bound, probe_cluster
         )
 
     if config.wandb_log:
-        setup_wandb(config)
+        utils.setup_wandb(config)
 
-    stop_requested, signal_handler = setup_signal_handler()
+    stop_requested, signal_handler = utils.setup_signal_handler()
     signal.signal(signal.SIGINT, signal_handler)
 
     # Main training loop
@@ -107,18 +100,18 @@ def main():
         
         # Learning rate decay
         timer.start('lr_update')
-        lr = update_learning_rate(optimizer, config, iter_num)
+        lr = utils.update_learning_rate(optimizer, config, iter_num)
         timer.end('lr_update')
 
         if iter_num > 0 and iter_num % config.eval_interval == 0:
-            eval_loss, probe_losses = run_evaluation(model, probe_cluster, config, ctx, get_batch_bound, timer)
+            eval_loss, probe_losses = utils.run_evaluation(model, probe_cluster, config, ctx, get_batch_bound, timer)
 
-            log_evaluation_results(eval_loss, probe_losses, iter_num, lr, config)
+            utils.log_evaluation_results(eval_loss, probe_losses, iter_num, lr, config)
 
             # Save checkpoint if needed
             if (not config.never_save_checkpoint and eval_loss['val'] < best_val_loss) or iter_num > config.max_iters:
                 best_val_loss = eval_loss['val']
-                save_checkpoint(model, optimizer, model_args, iter_num, best_val_loss, config, probe_cluster)
+                utils.save_checkpoint(model, optimizer, model_args, iter_num, best_val_loss, config, probe_cluster)
         
         # Get batch
         timer.start('data_prep')
@@ -127,11 +120,11 @@ def main():
 
         # Print sample of first batch (only once at the start of training)
         if iter_num == 0 and config.debug_data:
-            debug_print_batch(X, Y, probe_targets)
+            utils.debug_print_batch(X, Y, probe_targets)
         
         # Forward pass
         timer.start('training_step')
-        loss = run_single_training_step(
+        loss = utils.run_single_training_step(
             model, probe_cluster, optimizer, scaler, 
             X, Y, probe_targets, config, ctx, iter_num, get_batch_bound
         )
@@ -142,11 +135,11 @@ def main():
         
         # Log progress
         if iter_num % config.log_interval == 0:
-            print(f"iter {iter_num}: loss {loss:.4f}, time {iter_time*1000:.2f}ms")
+            print(f"iter {iter_num}: model loss {loss:.4f}, time {iter_time*1000:.2f}ms")
             
-            # Show timing breakdown every 20 iterations
+            # Show timing breakdown
             if iter_num > 0:
-                timer.summarize(n_iterations=20)
+                timer.summarize(iter_num)
                 if config.wandb_log:
                     wandb.log({
                         "iteration": iter_num,
@@ -158,10 +151,10 @@ def main():
 
         if stop_requested[0]:
             if config.show_final_eval_on_stop:
-                eval_loss, probe_losses = run_evaluation(model, probe_cluster, config, ctx, get_batch_bound, timer)
+                eval_loss, probe_losses = utils.run_evaluation(model, probe_cluster, config, ctx, get_batch_bound, timer)
                 print(f"Final evaluation: train loss {eval_loss['train']:.4f}, val loss {eval_loss['val']:.4f}")
             print("Saving final checkpoint...")
-            save_checkpoint(model, optimizer, model_args, iter_num, best_val_loss, config, probe_cluster, final=True)
+            utils.save_checkpoint(model, optimizer, model_args, iter_num, best_val_loss, config, probe_cluster, final=True)
             if config.wandb_log:
                 wandb.finish()
             break

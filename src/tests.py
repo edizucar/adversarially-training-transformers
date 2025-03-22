@@ -61,7 +61,7 @@ def visualize_quotes(text, tokenizer, quote_detector_fn):
     print("-" * 80)
 
 def test_quote_detection(quote_detector_fn, num_samples=10):
-    """Test the fast_in_quotes_feature function on text samples."""
+    """Test the quote detection function on text samples."""
     colorama.init()
     tokenizer = tiktoken.get_encoding("gpt2")
     
@@ -85,7 +85,7 @@ def test_quote_detection(quote_detector_fn, num_samples=10):
         print("\n#### Testing on TinyStories dataset samples ####\n")
         print("-" * 80)
         
-        sample_indices = random.sample(range(len(dataset["train"])), 10)
+        sample_indices = random.sample(range(len(dataset["train"])), num_samples)
         for idx in sample_indices:
             story = dataset["train"][idx]["text"]
             quotes_match = re.search(r'[^"]{0,50}"[^"]{10,100}"[^"]{0,50}', story)
@@ -95,6 +95,32 @@ def test_quote_detection(quote_detector_fn, num_samples=10):
     except Exception as e:
         print(f"Could not test on TinyStories dataset: {e}")
         print("You may need to install the datasets library: pip install datasets")
+        return
+
+def test_quote_detection_speed(quote_detector_fn, num_samples=10):
+    """Test how fast the quote detection function is."""
+    tokenizer = tiktoken.get_encoding("gpt2")
+
+    start_time = perf_counter()
+    try:
+        dataset = load_dataset("roneneldan/TinyStories")
+        sample_indices = random.sample(range(len(dataset["train"])), num_samples)
+        for idx in sample_indices:
+            story = dataset["train"][idx]["text"]
+            tokens = tokenizer.encode(story)
+            tokens_tensor = torch.tensor([tokens], dtype=torch.long)
+            sample_start_time = perf_counter()
+            quote_detector_fn(tokens_tensor, tokenizer)
+            sample_end_time = perf_counter() - sample_start_time
+            print(f"Time taken for sample: {sample_end_time:.6f} seconds")
+    except Exception as e:
+        print(f"Could not test on TinyStories dataset: {e}")
+        return
+
+    end_time = perf_counter()
+    total_time = end_time - start_time
+    print(f"Total time taken: {total_time:.6f} seconds")
+    print(f"Average time per sample: {total_time / num_samples:.6f} seconds")
 
 def test_generation_speed(checkpoint_path, num_tokens=100, num_samples=5, temperature=0.4, top_k=50, top_p=0.9):
     """
@@ -132,6 +158,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--quote_detector", action="store_true")
+    parser.add_argument("--quote_detector_speed", action="store_true")
     parser.add_argument("--test_dataset_odd_quotes", action="store_true")
     parser.add_argument("--test_generation_speed", action="store_true")
     args = parser.parse_args()
@@ -139,6 +166,10 @@ if __name__ == "__main__":
     if args.all or args.quote_detector:
         from utils import in_quotes_feature
         test_quote_detection(in_quotes_feature, num_samples=10)
+    if args.all or args.quote_detector_speed:
+        from utils import in_quotes_feature
+        print(f"Testing quote detection speed with {in_quotes_feature.__name__}")
+        test_quote_detection_speed(in_quotes_feature, num_samples=10)
     if args.all or args.test_dataset_odd_quotes:
         find_odd_quotes_in_dataset(dataset="roneneldan/TinyStories", text_field="text", full_text=True)
     if args.all or args.test_generation_speed:

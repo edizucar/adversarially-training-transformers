@@ -41,7 +41,7 @@ class TimingTracker:
     
     def summarize(self, n_iterations=None):
         """Print a summary of timing information"""
-        print("\n=== TIMING SUMMARY ===")
+        print(f"\n=== TIMING SUMMARY at {n_iterations} iterations ===")
         total_time = sum(sum(times) for times in self.timings.values())
         
         # Calculate statistics for each operation
@@ -167,78 +167,31 @@ def in_quotes_feature(
     Returns:
         BinaryFeatureExtractorOutput with features indicating tokens inside quotes and quote tokens
     """
+    TOKENS_WITH_QUOTES = {
+        1: 1,366: 1, 526: 1, 553: 1, 1298: 1, 1600: 1, 1701: 1, 1911: 1, 2404: 2, 2430: 2, 2474: 1, 2625: 1, 4895: 1, 4943: 1, 5320: 1, 5855: 1, 7203: 1, 7879: 1, 8172: 1, 8351: 2, 8762: 1,
+        8973: 1, 9063: 1, 9313: 1, 9962: 1, 11074: 1, 11097: 1, 11496: 1, 11919: 2, 12340: 1, 12813: 1, 12878: 1, 13018: 2, 13538: 2, 13984: 1, 14631: 1, 14692: 1, 15327: 1, 15341: 1, 15473: 2,
+        15931: 2, 16078: 1, 16725: 1, 17241: 1, 17553: 1, 17912: 1, 17971: 1, 18109: 1, 18161: 1, 19056: 1, 19570: 1, 19779: 1, 19990: 1, 20598: 1, 20662: 1, 21215: 1, 21387: 1, 22039: 1, 22135: 1,
+        23785: 1, 23984: 1, 24018: 1, 24426: 1, 24618: 1, 25113: 1, 25698: 1, 25719: 1, 26033: 1, 26214: 1, 26358: 2, 26700: 1, 26793: 1, 26989: 1, 27071: 1, 27267: 1, 27444: 1, 27896: 1, 29225: 1,
+        29368: 1, 29653: 1, 30478: 1, 30487: 1, 30543: 1, 30629: 1, 30823: 1, 30827: 1, 30866: 1, 32047: 1, 32203: 2, 32509: 2, 33116: 1, 33151: 2, 33172: 1, 33283: 1, 33490: 1, 34171: 2, 34607: 1,
+        34713: 4, 35379: 1, 35713: 1, 35922: 1, 36521: 1, 36786: 1, 37082: 1, 37160: 1, 37227: 3, 37811: 3, 38214: 1, 39658: 1, 40264: 1, 40484: 1, 40754: 1, 41424: 2, 42501: 1, 42720: 1, 42785: 2,
+        42911: 1, 42924: 1, 43634: 1, 43825: 1, 44212: 1, 44388: 1, 45144: 1, 45434: 1, 46385: 1, 47182: 4, 48219: 1, 48220: 1, 48774: 1, 49296: 1, 50248: 1
+    }
     features = torch.zeros_like(tokens, dtype=torch.float, device=tokens.device)
-    quote_counts = {}
-    
-    for b in range(tokens.shape[0]):
-        in_quote = False
-        
-        for pos in range(tokens.shape[1]):
-            token_id = tokens[b, pos].item()
-            
-            # Get/compute quote count (with lazy caching)
-            if token_id not in quote_counts:
-                quote_counts[token_id] = num_quotes_in_token(token_id)
-            
-            # Mark if inside quotes or contains quotes
-            if in_quote or quote_counts[token_id] > 0:
-                features[b, pos] = 1.0
-            
-            # Toggle quote state for each quote in token
-            for _ in range(quote_counts[token_id]):
-                in_quote = not in_quote
-    
-    return BinaryFeatureExtractorOutput(text=None, tokens=tokens, features=features)
+    batch_size, seq_len = tokens.shape
 
-def in_quotes_feature(
-    tokens: torch.Tensor,
-    tokenizer: any = GPT2_TOKENIZER
-) -> BinaryFeatureExtractorOutput:
-    """
-    Detect tokens inside quotes using regex on the detokenized text.
-    
-    Args:
-        tokens: Batched token IDs [batch_size, seq_len]
-        tokenizer: The tokenizer used to encode the text
-        
-    Returns:
-        BinaryFeatureExtractorOutput with features indicating tokens inside quotes
-    """
-    features = torch.zeros_like(tokens, dtype=torch.float, device=tokens.device)
-    
-    for b in range(tokens.shape[0]):
-        # Convert tokens to text
-        batch_tokens = tokens[b, :].tolist()
-        text = tokenizer.decode(batch_tokens)
-        
-        # Find character positions of all quotes
-        quote_positions = [i for i, char in enumerate(text) if char == '"']
-        char_in_quotes = [False] * len(text)
-        
-        # Mark characters between quote pairs
-        for i in range(0, len(quote_positions) - 1, 2):
-            if i + 1 < len(quote_positions):
-                start, end = quote_positions[i], quote_positions[i + 1]
-                for j in range(start, end + 1):  # Include the quotes
-                    char_in_quotes[j] = True
-        
-        # Map character positions back to tokens
-        char_pos = 0
-        for pos, token_id in enumerate(batch_tokens):
-            token_text = tokenizer.decode([token_id])
-            token_len = len(token_text)
-            
-            # Check if any character in this token's range is in quotes
-            in_quotes = False
-            for j in range(char_pos, min(char_pos + token_len, len(char_in_quotes))):
-                if char_in_quotes[j]:
-                    in_quotes = True
-                    break
-            
-            if in_quotes:
+    unique_tokens = torch.unique(tokens.cpu()).tolist()
+
+    for b in range(batch_size):
+        in_quote = False
+        batch_tokens = tokens[b].cpu().tolist()
+
+        for pos in range(seq_len):
+            token_id = batch_tokens[pos]
+            quote_count = TOKENS_WITH_QUOTES.get(token_id, 0)
+            if in_quote or quote_count > 0:
                 features[b, pos] = 1.0
-            
-            char_pos += token_len
+            for _ in range(quote_count):
+                in_quote = not in_quote
     
     return BinaryFeatureExtractorOutput(text=None, tokens=tokens, features=features)
 
@@ -443,7 +396,7 @@ def get_vocab_size(config, data_dir, device):
             vocab_size = meta['vocab_size']
         return vocab_size, None
 
-def load_model_from_checkpoint(model, checkpoint):
+def load_model_from_checkpoint(model, checkpoint, train_adversarially=False):
     """Load model state from checkpoint and fix key prefixes if needed."""
     state_dict = checkpoint['model']
     unwanted_prefix = '_orig_mod.'
@@ -455,6 +408,8 @@ def load_model_from_checkpoint(model, checkpoint):
     model.load_state_dict(state_dict)
     
     iter_num = checkpoint.get('iter_num', 0)
+    if train_adversarially:
+        iter_num = 0
     best_val_loss = checkpoint.get('best_val_loss', float('inf'))
     
     return model, iter_num, best_val_loss
@@ -558,7 +513,7 @@ def setup_wandb(config):
 
 def log_evaluation_results(eval_loss, probe_losses, iter_num, lr, config):
     """Log evaluation results to console and wandb."""
-    print(f"Step {iter_num}: train loss {eval_loss['train']:.4f}, val loss {eval_loss['val']:.4f}")
+    print(f"Evaluation results at iteration {iter_num}: train loss {eval_loss['train']:.4f}, val loss {eval_loss['val']:.4f}")
 
     if not config.wandb_log:
         return
