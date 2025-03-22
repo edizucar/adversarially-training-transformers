@@ -13,9 +13,12 @@ import src.utils as utils
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a GPT model')
-    parser.add_argument('config', type=str, help='Path to config file (YAML or Python)')
+    parser.add_argument('--config', type=str, help='Path to config file (YAML or Python)')
     parser.add_argument('--eval-only', action='store_true', help='Run evaluation only')
     parser.add_argument('--no-wandb', action='store_true', help='Disable wandb logging')
+    parser.add_argument('--lambda_adversarial', type=float, help='Lambda weighting of probe loss for adversarial training')
+    parser.add_argument('--phi_probe_steps_per_model_update', type=int, help='Phi probe steps per model update')
+    parser.add_argument('--max_iters', type=int, help='Maximum number of iterations')
     return parser.parse_args()
 
 def main():
@@ -30,6 +33,15 @@ def main():
         config.wandb_log = False
     if args.eval_only:
         config.eval_only = True
+    if args.lambda_adversarial is not None:
+        config.lambda_adversarial = args.lambda_adversarial
+    if args.phi_probe_steps_per_model_update is not None:
+        config.phi_probe_steps_per_model_update = args.phi_probe_steps_per_model_update
+    if args.max_iters is not None:
+        config.max_iters = args.max_iters
+    config.eval_interval = min(config.eval_interval, config.max_iters)
+    config.log_interval = min(config.log_interval, config.max_iters)
+    config.lr_decay_iters = min(config.lr_decay_iters, config.max_iters)
     
     # Initialize timing tracker
     timer = utils.TimingTracker()
@@ -169,6 +181,20 @@ def main():
     timer.end('total_training')
     print("\nTraining complete. Final timing summary:")
     timer.summarize()
+
+    # At the end of your main function, right before wandb.finish()
+    if config.wandb_log:
+        # Log total training time as a metric
+        total_training_time = timer.timings['total_training'][-1]
+        wandb.run.summary["total_time_seconds"] = total_training_time
+        wandb.run.summary["total_time_minutes"] = total_training_time / 60
+        wandb.run.summary["total_time_hours"] = total_training_time / 3600
+        
+        # Log average iteration time
+        iterations_completed = iter_num - 1  # Subtract 1 if iter_num starts at 0
+        wandb.run.summary["avg_iteration_time_ms"] = (total_training_time * 1000) / iterations_completed
+
+        wandb.finish()
 
 if __name__ == "__main__":
     main()
