@@ -1,0 +1,58 @@
+# Output configuration
+source_dir: 'checkpoints/tiny_stories'
+dest_dir: 'checkpoints/test_train'
+max_iters: 6000
+eval_interval: 500
+eval_iters: 20
+log_interval: 500
+
+# Checkpointing
+always_save_checkpoint: false
+never_save_checkpoint: false
+
+# Wandb logging
+wandb_log: true
+wandb_project: 'tiny-stories-train'
+wandb_run_name: 'mini-gpt-test-train'
+
+# Dataset config
+dataset: 'tiny_stories'
+compile: true
+gradient_accumulation_steps: 2
+use_gradient_checkpointing: false
+auto_tune_batch_size: false
+batch_size: 16
+block_size: 256
+dtype: 'bfloat16'
+
+# Model architecture
+n_layer: 6
+n_head: 6
+n_embd: 384
+dropout: 0.2
+
+# Optimizer
+learning_rate: 1e-3
+decay_lr: true
+lr_decay_iters: 2000
+min_lr: 1e-4
+beta2: 0.99
+warmup_iters: 0 # skip warmup when not training the model
+
+# Training components
+train_probes: false
+train_model: true
+
+# Probe config
+probe_type: 'linear'
+probe_learning_rate: 1e-3
+lambda_adversarial: 1e-1
+phi_probe_steps_per_model_update: 1
+train_adversarially: false
+
+# Initialization
+init_from: 'scratch'
+
+# Debugging
+debug_data: false
+show_final_eval_on_stop: false

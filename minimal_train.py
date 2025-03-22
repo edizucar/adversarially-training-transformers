@@ -14,7 +14,6 @@ import src.utils as utils
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a GPT model')
     parser.add_argument('config', type=str, help='Path to config file (YAML or Python)')
-    parser.add_argument('--resume', action='store_true', help='Resume training from checkpoint')
     parser.add_argument('--eval-only', action='store_true', help='Run evaluation only')
     parser.add_argument('--no-wandb', action='store_true', help='Disable wandb logging')
     return parser.parse_args()
@@ -29,6 +28,8 @@ def main():
 
     if args.no_wandb:
         config.wandb_log = False
+    if args.eval_only:
+        config.eval_only = True
     
     # Initialize timing tracker
     timer = utils.TimingTracker()
@@ -60,16 +61,16 @@ def main():
     model = GPT(model_args)
     model.to(device)
 
-    # Load model from checkpoint if needed
     iter_num = 0
     best_val_loss = float('inf')
 
+    # Load model from checkpoint if needed
     if config.init_from == 'resume' and checkpoint is not None:
+        print("Loading model from checkpoint")
         model, iter_num, best_val_loss = utils.load_model_from_checkpoint(model, checkpoint, config.train_adversarially)
     
     # Intialize probes if needed
-    if config.train_probes:
-        probe_cluster = utils.initialize_probes(config, device, checkpoint, ProbeCluster)
+    probe_cluster = utils.initialize_probes(config, device, checkpoint, ProbeCluster) if config.train_probes else None
     
     # Setup training components
     model, optimizer, scaler = utils.setup_training_components(model, config, device_type)
