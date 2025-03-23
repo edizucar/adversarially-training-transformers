@@ -1,17 +1,14 @@
 program: train.py
 method: grid  # You could also use 'random' or 'bayes'
 metric:
-  name: eval/val_loss  # The metric to optimize (assuming this is what you track)
+  name: val/model_loss  # The metric to optimize (assuming this is what you track)
   goal: minimize
 parameters:
   config:
     value: 'config/tiny_stories_adv.yaml'  # Your base config
   lambda_adversarial:
-    # values: [0.01, 0.05, 0.1, 1.0]
-    values: [0.01, 0.05]
+    values: [0.01, 0.05, 0.1, 1.0]
   phi_probe_steps_per_model_update:
-    # values: [1, 5, 10, 30]
-    values: [1, 5]
+    values: [1, 5, 10, 30]
   max_iters:
-    # values: [10, 2000, 10000]
-    values: [10, 2000]
+    values: [10, 2000, 10000]

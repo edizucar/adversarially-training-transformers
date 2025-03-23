@@ -491,9 +491,13 @@ def save_checkpoint(model, optimizer, model_args, iter_num, best_val_loss, confi
 
 def setup_wandb(config):
     """Initialize wandb logging."""
+    if os.environ.get('WANDB_SWEEP_ID'):
+        run_name = f"lambda_{config.lambda_adversarial}_phi_{config.phi_probe_steps_per_model_update}_iters_{config.max_iters}"
+    else:
+        run_name = config.wandb_run_name
     wandb.init(
         project=config.wandb_project,
-        name=config.wandb_run_name,
+        name=run_name,
         config=vars(config)
     )
 
