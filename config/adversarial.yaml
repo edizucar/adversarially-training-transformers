@@ -1,10 +1,10 @@
 # Output configuration
 source_dir: 'checkpoints/tiny_stories'
-dest_dir: 'checkpoints/test_train'
-max_iters: 6000
-eval_interval: 500
+dest_dir: 'checkpoints/tiny_stories_adv'
+max_iters: 2000
+eval_interval: 400
 eval_iters: 20
-log_interval: 500
+log_interval: 400
 
 # Checkpointing
 always_save_checkpoint: false
@@ -13,7 +13,7 @@ never_save_checkpoint: false
 # Wandb logging
 wandb_log: true
 wandb_project: 'tiny-stories-train'
-wandb_run_name: 'mini-gpt-test-train'
+wandb_run_name: 'mini-gpt-adversarial'
 
 # Dataset config
 dataset: 'tiny_stories'
@@ -22,14 +22,17 @@ gradient_accumulation_steps: 2
 use_gradient_checkpointing: false
 auto_tune_batch_size: false
 batch_size: 16
-block_size: 256
+block_size: 512
+hf_config_block_size: 2048
 dtype: 'bfloat16'
 
 # Model architecture
-n_layer: 6
-n_head: 6
-n_embd: 384
-dropout: 0.2
+n_layer: 4
+n_head: 16
+n_embd: 768
+attn_dropout: 0.0
+resid_dropout: 0.0
+bias: true
 
 # Optimizer
 learning_rate: 1e-3
@@ -40,7 +43,7 @@ beta2: 0.99
 warmup_iters: 0 # skip warmup when not training the model
 
 # Training components
-train_probes: false
+train_probes: true
 train_model: true
 
 # Probe config
@@ -48,10 +51,11 @@ probe_type: 'linear'
 probe_learning_rate: 1e-3
 lambda_adversarial: 1e-1
 phi_probe_steps_per_model_update: 1
-train_adversarially: false
+train_adversarially: true
 
 # Initialization
-init_from: 'scratch'
+init_from: 'huggingface'
+huggingface_model_id: 'roneneldan/TinyStories-33M'
 
 # Debugging
 debug_data: false

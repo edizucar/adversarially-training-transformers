@@ -18,7 +18,7 @@ if __name__ == '__main__':
     dataset = load_dataset("roneneldan/TinyStories", split="train")
     
     # Create a validation split
-    split_dataset = dataset.train_test_split(test_size=0.0005, seed=2357, shuffle=True)
+    split_dataset = dataset.train_test_split(test_size=0.05, seed=2357, shuffle=True)
     split_dataset['val'] = split_dataset.pop('test')  # rename the test split to val
     
     print(split_dataset)

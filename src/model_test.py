@@ -26,103 +26,106 @@ class LayerNorm(nn.Module):
     def forward(self, input):
         return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
 
-class CausalSelfAttention(nn.Module):
-
-    def __init__(self, config):
+class CausalAttention(nn.Module):
+    """
+    Implementation of GPT-Neo style alternating attention patterns
+    with global attention in odd-numbered layers and local attention in even-numbered layers
+    """
+    def __init__(self, config, attention_type, layer_idx):
         super().__init__()
         assert config.n_embd % config.n_head == 0
-        # key, query, value projections for all heads, but in a batch
-        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias)
-        # output projection
-        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
+
+        # key, query, value projections for all heads
+        self.k_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.qkv_bias)
+        self.v_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.qkv_bias)
+        self.q_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.qkv_bias)
+        self.out_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
+        
         # regularization
-        self.attn_dropout = nn.Dropout(config.attn_dropout)
-        self.resid_dropout = nn.Dropout(config.resid_dropout)
+        self.attn_dropout = nn.Dropout(float(config.attn_dropout))
+        self.resid_dropout = nn.Dropout(float(config.resid_dropout))
+        self.is_causal = True
+        self.layer_id = layer_idx
         self.n_head = config.n_head
         self.n_embd = config.n_embd
-        # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
-        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
-        if not self.flash:
-            print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
-            # causal mask to ensure that attention is only applied to the left in the input sequence
-            self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
-                                        .view(1, 1, config.block_size, config.block_size))
+        self.window_size = config.window_size
+
+        # Create and store attention bias
+        max_positions = config.block_size
+        bias = torch.tril(torch.ones((max_positions, max_positions), dtype=bool)).view(
+            1, 1, max_positions, max_positions
+        )
+        if attention_type == "local":
+            bias = torch.bitwise_xor(bias, torch.tril(bias, -config.window_size))
+        self.register_buffer("bias", bias, persistent=False)
+        self.register_buffer("masked_bias", torch.tensor(-1e9), persistent=False)
 
     def forward(self, x):
         B, T, C = x.size()  # batch size, sequence length, embedding dim
 
         # Calculate query, key, values for all heads in batch
-        qkv = self.c_attn(x)
-        q, k, v = qkv.chunk(3, dim=2)
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
         
         # Reshape for attention computation
-        q = q.view(B, T, self.n_head, C // self.n_head)
-        k = k.view(B, T, self.n_head, C // self.n_head)
-        v = v.view(B, T, self.n_head, C // self.n_head)
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # [B, nh, T, hs]
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # [B, nh, T, hs]
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # [B, nh, T, hs]
         
-        # Try flash-attention first, then PyTorch's implementation, then manual
-        # To ensure the right implementation is used
-        attention_output = None
+        # Compute attention weights
+        # Scale dot-product
+        # att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))  # [B, nh, T, T]
+        att = torch.matmul(q, k.transpose(-1, -2))  # [B, nh, T, T]
+
+        # Apply causal mask (always needed for decoder-only models)
+        causal_mask = self.bias[:, :, :T, :T]
+        mask_value = torch.finfo(att.dtype).min
+        mask_value = torch.tensor(mask_value, dtype=att.dtype).to(att.device)
+        att = torch.where(causal_mask, att, mask_value)
         
-        # Try Flash Attention 2 first (fastest)
-        try:
-            from flash_attn import flash_attn_func
-            # Explicitly cast to bfloat16 or float16 based on availability
-            dtype_for_flash = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-            
-            # Cast the tensors to the appropriate dtype
-            q_fa = q.contiguous().to(dtype=dtype_for_flash)
-            k_fa = k.contiguous().to(dtype=dtype_for_flash)
-            v_fa = v.contiguous().to(dtype=dtype_for_flash)
-            
-            # Flash attention with causal mask
-            y_fa = flash_attn_func(
-                q_fa, k_fa, v_fa,
-                dropout_p=self.dropout if self.training else 0.0,
-                causal=True
-            )
-            attention_output = y_fa.transpose(1, 2).reshape(B, T, C).to(dtype=x.dtype)
-        except (ImportError, RuntimeError) as e:
-            # Print helpful message
-            print(f"Flash Attention error (falling back to default attention): {e}")
-            attention_output = None
+        # Normalize attention weights
+        att = F.softmax(att, dim=-1)
+        att = att.to(v.dtype)
+        att = self.attn_dropout(att)
         
-        # If flash attention failed, try PyTorch's implementation
-        if attention_output is None and self.flash:
-            q = q.transpose(1, 2)
-            k = k.transpose(1, 2)
-            v = v.transpose(1, 2)
-            try:
-                y = torch.nn.functional.scaled_dot_product_attention(
-                    q, k, v, 
-                    attn_mask=None,
-                    dropout_p=self.dropout if self.training else 0,
-                    is_causal=True
-                )
-                attention_output = y.transpose(1, 2).reshape(B, T, C)
-            except Exception:
-                print("Flash Attention error (falling back to default attention):")
-                attention_output = None
-            
-        # If both failed, use manual implementation
-        if attention_output is None:
-            # Manual attention calculation
-            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-            att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
-            att = F.softmax(att, dim=-1)
-            att = self.attn_dropout(att)
-            y = att @ v  # [B, nh, T, hs]
-            attention_output = y.transpose(1, 2).reshape(B, T, C)
+        # Apply attention to values
+        attn_output = torch.matmul(att, v)  # [B, nh, T, hs]
+        # y = att @ v  # [B, nh, T, hs]
         
-        # Output projection  
-        return self.resid_dropout(self.c_proj(attention_output))
+        # Reshape back
+        y = attn_output.permute(0, 2, 1, 3).contiguous().view(B, T, C)
+        
+        # Output projection
+        return self.resid_dropout(self.out_proj(y))
+
+class Attention(nn.Module):
+    def __init__(self, config, layer_idx):
+        super().__init__()
+        self.layer_id = layer_idx
+        self.attention_type = config.attention_layers[layer_idx]
+        self.is_global = self.attention_type == 'global'
+        self.attention = CausalAttention(config, self.attention_type, layer_idx)
+
+    def forward(self, x):
+        return self.attention(x)
+
+class NewGELUActivation(nn.Module):
+    """
+    Implementation of the GELU activation function currently in Google BERT repo (identical to OpenAI GPT). Also see
+    the Gaussian Error Linear Units paper: https://arxiv.org/abs/1606.08415
+    """
+
+    def forward(self, input):
+        return 0.5 * input * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) * (input + 0.044715 * torch.pow(input, 3.0))))
 
 class MLP(nn.Module):
 
     def __init__(self, config):
         super().__init__()
         self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
-        self.gelu    = nn.GELU()
+        # self.gelu    = nn.GELU()
+        self.gelu    = NewGELUActivation()
         self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
         self.dropout = nn.Dropout(config.dropout)
 
@@ -135,10 +138,10 @@ class MLP(nn.Module):
 
 class Block(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config, layer_idx):
         super().__init__()
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
-        self.attn = CausalSelfAttention(config)
+        self.attn = Attention(config, layer_idx)
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
 
@@ -159,6 +162,10 @@ class GPTConfig:
     n_embd: int = 768
     dropout: float = 0.0
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    qkv_bias: bool = True
+    attn_dropout: float = 0.1
+    resid_dropout: float = 0.1
+    window_size: int = 256  # Local attention window size
 
 class GPT(nn.Module):
 
@@ -172,7 +179,7 @@ class GPT(nn.Module):
             wte = nn.Embedding(config.vocab_size, config.n_embd),
             wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.dropout),
-            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            h = nn.ModuleList([Block(config, i) for i in range(config.n_layer)]),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)

@@ -57,17 +57,22 @@ def main():
     data_dir = os.path.join('data', config.dataset)
     train_data, val_data = utils.load_dataset(data_dir)
     
-    # Get vocab size and maybe checkpoint
-    vocab_size, checkpoint = utils.get_vocab_size(config, data_dir, device)
+    # Get model args
+    config, checkpoint = utils.get_model_args(config, data_dir, device)
+    
+    if config.init_from == 'huggingface':
+        block_size = config.hf_config_block_size
+    else:
+        block_size = config.block_size
     
     # Create model
     model_args = GPTConfig(
         n_layer=config.n_layer,
         n_head=config.n_head,
         n_embd=config.n_embd,
-        block_size=config.block_size,
+        block_size=block_size,
         bias=config.bias if hasattr(config, 'bias') else False,
-        vocab_size=vocab_size,  # Use vocab size from checkpoint or meta
+        vocab_size=config.vocab_size,
         dropout=config.dropout,
     )
     model = GPT(model_args)
@@ -77,7 +82,10 @@ def main():
     best_val_loss = float('inf')
 
     # Load model from checkpoint if needed
-    if config.init_from == 'resume' and checkpoint is not None:
+    if config.init_from == 'huggingface':
+        print("Loading model from huggingface")
+        model = utils.load_model_from_huggingface(model, config, device)
+    elif config.init_from == 'resume' and checkpoint is not None:
         print("Loading model from checkpoint")
         model, iter_num, best_val_loss = utils.load_model_from_checkpoint(model, checkpoint, config.train_adversarially)
     
@@ -122,7 +130,7 @@ def main():
             utils.log_evaluation_results(eval_loss, probe_losses, iter_num, lr, config)
 
             # Save checkpoint if needed
-            if (not config.never_save_checkpoint and eval_loss['val'] < best_val_loss) or iter_num > config.max_iters:
+            if iter_num > 0 and ((not config.never_save_checkpoint and eval_loss['val'] < best_val_loss) or iter_num > config.max_iters):
                 best_val_loss = eval_loss['val']
                 utils.save_checkpoint(model, optimizer, model_args, iter_num, best_val_loss, config, probe_cluster, final=True)
         
@@ -163,13 +171,10 @@ def main():
         iter_num += 1
 
         if stop_requested[0]:
+            print(f"Stopping training at iter {iter_num}")
             if config.show_final_eval_on_stop:
                 eval_loss, probe_losses = utils.run_evaluation(model, probe_cluster, config, ctx, get_batch_bound, timer)
                 print(f"Final evaluation: train loss {eval_loss['train']:.4f}, val loss {eval_loss['val']:.4f}")
-            print("Saving final checkpoint...")
-            utils.save_checkpoint(model, optimizer, model_args, iter_num, best_val_loss, config, probe_cluster)
-            if config.wandb_log:
-                wandb.finish()
             break
         
         # Early stopping for debugging
@@ -182,8 +187,11 @@ def main():
     print("\nTraining complete. Final timing summary:")
     timer.summarize()
 
+    print("Saving final checkpoint...")
+    utils.save_checkpoint(model, optimizer, model_args, iter_num, best_val_loss, config, probe_cluster)
+
     # At the end of your main function, right before wandb.finish()
-    if config.wandb_log:
+    if config.wandb_log and not stop_requested[0]:
         # Log total training time as a metric
         total_training_time = timer.timings['total_training'][-1]
         wandb.run.summary["total_time_seconds"] = total_training_time
@@ -194,7 +202,7 @@ def main():
         iterations_completed = iter_num - 1  # Subtract 1 if iter_num starts at 0
         wandb.run.summary["avg_iteration_time_ms"] = (total_training_time * 1000) / iterations_completed
 
-        wandb.finish()
+    wandb.finish()
 
 if __name__ == "__main__":
     main()

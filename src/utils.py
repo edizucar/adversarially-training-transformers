@@ -5,9 +5,11 @@ import wandb
 import torch
 import tiktoken
 import numpy as np
-from contextlib import nullcontext
 from typing import NamedTuple
+from datetime import datetime
+from contextlib import nullcontext
 from collections import defaultdict
+from transformers import AutoModelForCausalLM, AutoConfig
 
 GPT2_TOKENIZER = tiktoken.get_encoding("gpt2")
 
@@ -354,25 +356,34 @@ def load_dataset(data_dir):
     val_data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
     return train_data, val_data
 
-def get_vocab_size(config, data_dir, device):
+def get_model_args(config, data_dir, device):
     """Determine vocabulary size from checkpoint or metadata."""
-    vocab_size = None
-    
-    if config.init_from == 'resume':
+    if config.init_from == 'huggingface':
+        hf_config = AutoConfig.from_pretrained(config.huggingface_model_id)
+        for key, value in hf_config.to_dict().items():
+            if key not in ['num_layers', 'num_heads', 'hidden_size', 'window_size']:
+                setattr(config, key, value)
+        if hasattr(hf_config, 'num_layers'):
+            config.n_layer = hf_config.num_layers
+        if hasattr(hf_config, 'num_heads'):
+            config.n_head = hf_config.num_heads
+        if hasattr(hf_config, 'hidden_size'):
+            config.n_embd = hf_config.hidden_size
+        return config, None
+    elif config.init_from == 'resume':
         ckpt_path = os.path.join(config.source_dir, 'ckpt.pt')
         checkpoint = torch.load(ckpt_path, map_location=device)
-        
         if 'model_args' in checkpoint:
             model_args_dict = checkpoint['model_args']
-            vocab_size = model_args_dict.get('vocab_size', None)
+            config.vocab_size = model_args_dict.get('vocab_size', None)
         else:
             # Try to infer from weights
             for k in checkpoint['model'].keys():
                 if k == 'transformer.wte.weight' or k == '_orig_mod.transformer.wte.weight':
-                    vocab_size = checkpoint['model'][k].shape[0]
-                    print(f"Inferred vocab_size = {vocab_size} from checkpoint weights")
+                    config.vocab_size = checkpoint['model'][k].shape[0]
+                    print(f"Inferred vocab_size = {config.vocab_size} from checkpoint weights")
                     break
-        return vocab_size, checkpoint
+        return config, checkpoint
     else:
         # Find vocab size from meta.pkl
         meta_path = os.path.join(data_dir, 'meta.pkl')
@@ -380,8 +391,8 @@ def get_vocab_size(config, data_dir, device):
             import pickle
             with open(meta_path, 'rb') as f:
                 meta = pickle.load(f)
-            vocab_size = meta['vocab_size']
-        return vocab_size, None
+            config.vocab_size = meta['vocab_size']
+        return config, None
 
 def load_model_from_checkpoint(model, checkpoint, train_adversarially=False):
     """Load model state from checkpoint and fix key prefixes if needed."""
@@ -400,6 +411,70 @@ def load_model_from_checkpoint(model, checkpoint, train_adversarially=False):
     best_val_loss = checkpoint.get('best_val_loss', float('inf'))
     
     return model, iter_num, best_val_loss
+
+def load_model_from_huggingface(model, config, device):
+    """
+    Load the TinyStories-33M model from HuggingFace and convert to our model format.
+    """
+    print("Loading TinyStories-33M from HuggingFace...")
+    hf_model = AutoModelForCausalLM.from_pretrained('roneneldan/TinyStories-33M')
+    
+    # Create state dict mapping from HF model to our model
+    state_dict = {}
+    
+    # Map transformer weights
+    # Embeddings
+    state_dict['transformer.wte.weight'] = hf_model.transformer.wte.weight.clone()
+    state_dict['transformer.wpe.weight'] = hf_model.transformer.wpe.weight.clone()
+    
+    # Transformer blocks
+    for i in range(config.n_layer):
+        # Attention weights
+        state_dict[f'transformer.h.{i}.attn.c_attn.weight'] = torch.cat([
+            hf_model.transformer.h[i].attn.attention.q_proj.weight,
+            hf_model.transformer.h[i].attn.attention.k_proj.weight,
+            hf_model.transformer.h[i].attn.attention.v_proj.weight
+        ], dim=0)
+        if hasattr(hf_model.transformer.h[i].attn.attention.q_proj, 'bias') and hf_model.transformer.h[i].attn.attention.q_proj.bias is not None:
+            state_dict[f'transformer.h.{i}.attn.c_attn.bias'] = torch.cat([
+                hf_model.transformer.h[i].attn.attention.q_proj.bias,
+                hf_model.transformer.h[i].attn.attention.k_proj.bias,
+                hf_model.transformer.h[i].attn.attention.v_proj.bias
+            ], dim=0)
+        else:
+            state_dict[f'transformer.h.{i}.attn.c_attn.bias'] = torch.zeros(3 * hf_model.transformer.h[i].attn.attention.k_proj.in_features)
+        state_dict[f'transformer.h.{i}.attn.c_proj.weight'] = hf_model.transformer.h[i].attn.attention.out_proj.weight.clone()
+        if hasattr(hf_model.transformer.h[i].attn.attention.out_proj, 'bias') and hf_model.transformer.h[i].attn.attention.out_proj.bias is not None:
+            state_dict[f'transformer.h.{i}.attn.c_proj.bias'] = hf_model.transformer.h[i].attn.attention.out_proj.bias.clone()
+        else:
+            state_dict[f'transformer.h.{i}.attn.c_proj.bias'] = torch.zeros(hf_model.transformer.h[i].attn.attention.out_proj.in_features)
+        
+        # MLP weights
+        state_dict[f'transformer.h.{i}.mlp.c_fc.weight'] = hf_model.transformer.h[i].mlp.c_fc.weight.clone()
+        state_dict[f'transformer.h.{i}.mlp.c_fc.bias'] = hf_model.transformer.h[i].mlp.c_fc.bias.clone()
+        state_dict[f'transformer.h.{i}.mlp.c_proj.weight'] = hf_model.transformer.h[i].mlp.c_proj.weight.clone()
+        state_dict[f'transformer.h.{i}.mlp.c_proj.bias'] = hf_model.transformer.h[i].mlp.c_proj.bias.clone()
+        
+        # LayerNorms
+        state_dict[f'transformer.h.{i}.ln_1.weight'] = hf_model.transformer.h[i].ln_1.weight.clone()
+        state_dict[f'transformer.h.{i}.ln_1.bias'] = hf_model.transformer.h[i].ln_1.bias.clone()
+        state_dict[f'transformer.h.{i}.ln_2.weight'] = hf_model.transformer.h[i].ln_2.weight.clone()
+        state_dict[f'transformer.h.{i}.ln_2.bias'] = hf_model.transformer.h[i].ln_2.bias.clone()
+    
+    # Final layer norm
+    state_dict['transformer.ln_f.weight'] = hf_model.transformer.ln_f.weight.clone()
+    state_dict['transformer.ln_f.bias'] = hf_model.transformer.ln_f.bias.clone()
+    
+    # LM head
+    state_dict['lm_head.weight'] = hf_model.lm_head.weight.clone()
+    
+    # Load state dict into our model
+    model.load_state_dict(state_dict)
+    target_block_size = config.block_size
+    model.crop_block_size(target_block_size)
+    model.to(device)
+    
+    return model
 
 def initialize_probes(config, device, checkpoint=None, ProbeCluster=None):
     """Initialize probe cluster if needed."""
@@ -483,8 +558,10 @@ def save_checkpoint(model, optimizer, model_args, iter_num, best_val_loss, confi
 
     if probe_cluster is not None:
         checkpoint['probe_state'] = probe_cluster.state_dict()
+
+    os.makedirs(config.dest_dir, exist_ok=True)
     
-    filename = 'ckpt.pt' if final else 'ckpt_intermediate.pt'
+    filename = f'ckpt_{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.pt' if final else f'ckpt_intermediate_{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.pt'
     filepath = os.path.join(config.dest_dir, filename)
     print(f"Saving checkpoint to {filepath}")
     torch.save(checkpoint, filepath)
@@ -637,6 +714,5 @@ def setup_signal_handler():
     
     def signal_handler(sig, frame):
         stop_requested[0] = True
-        print("Stopping training...")
         
     return stop_requested, signal_handler

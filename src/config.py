@@ -17,6 +17,7 @@ class TrainingConfig:
     always_save_checkpoint: bool = True
     never_save_checkpoint: bool = False
     init_from: str = 'scratch'  # 'scratch' or 'resume' or 'gpt2*'
+    huggingface_model_id: str = 'roneneldan/TinyStories-33M'
     
     # wandb logging
     wandb_log: bool = False
@@ -28,13 +29,15 @@ class TrainingConfig:
     gradient_accumulation_steps: int = 40
     batch_size: int = 12
     block_size: int = 1024
+    hf_config_block_size: int = 2048
     
     # model
     n_layer: int = 12
     n_head: int = 12
     n_embd: int = 768
-    dropout: float = 0.0
-    bias: bool = False
+    attn_dropout: float = 0.0
+    resid_dropout: float = 0.0
+    bias: bool = True
     
     # optimizer
     learning_rate: float = 6e-4
