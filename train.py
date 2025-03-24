@@ -64,30 +64,19 @@ def main():
         block_size = config.hf_config_block_size
     else:
         block_size = config.block_size
-    
-    # Create model
-    model_args = GPTConfig(
-        n_layer=config.n_layer,
-        n_head=config.n_head,
-        n_embd=config.n_embd,
-        block_size=block_size,
-        bias=config.bias if hasattr(config, 'bias') else False,
-        vocab_size=config.vocab_size,
-        dropout=config.dropout,
-    )
-    model = GPT(model_args)
-    model.to(device)
 
     iter_num = 0
     best_val_loss = float('inf')
 
     # Load model from checkpoint if needed
     if config.init_from == 'huggingface':
-        print("Loading model from huggingface")
-        model = utils.load_model_from_huggingface(model, config, device)
+        model, model_args = utils.load_model_from_huggingface(config.huggingface_model_id, device, GPT, GPTConfig)
     elif config.init_from == 'resume' and checkpoint is not None:
-        print("Loading model from checkpoint")
-        model, iter_num, best_val_loss = utils.load_model_from_checkpoint(model, checkpoint, config.train_adversarially)
+        model, model_args, iter_num, best_val_loss = utils.load_model_from_checkpoint(checkpoint, device, GPT, GPTConfig)
+    elif config.init_from == 'resume' and checkpoint is None:
+        raise ValueError(f"Checkpoint not found for resume")
+    else:
+        raise ValueError(f"Invalid init_from value: {config.init_from}")
     
     # Intialize probes if needed
     probe_cluster = utils.initialize_probes(config, device, checkpoint, ProbeCluster) if config.train_probes else None

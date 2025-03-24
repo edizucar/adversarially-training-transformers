@@ -9,7 +9,7 @@ from typing import NamedTuple
 from datetime import datetime
 from contextlib import nullcontext
 from collections import defaultdict
-from transformers import AutoModelForCausalLM, AutoConfig
+from transformers import AutoModelForCausalLM, AutoConfig, AutoTokenizer
 
 GPT2_TOKENIZER = tiktoken.get_encoding("gpt2")
 
@@ -372,6 +372,7 @@ def get_model_args(config, data_dir, device):
         return config, None
     elif config.init_from == 'resume':
         ckpt_path = os.path.join(config.source_dir, 'ckpt.pt')
+        print(f"Loading model from {ckpt_path}")
         checkpoint = torch.load(ckpt_path, map_location=device)
         if 'model_args' in checkpoint:
             model_args_dict = checkpoint['model_args']
@@ -394,87 +395,85 @@ def get_model_args(config, data_dir, device):
             config.vocab_size = meta['vocab_size']
         return config, None
 
-def load_model_from_checkpoint(model, checkpoint, train_adversarially=False):
-    """Load model state from checkpoint and fix key prefixes if needed."""
-    state_dict = checkpoint['model']
-    unwanted_prefix = '_orig_mod.'
+def load_model_from_checkpoint(checkpoint, device, GPT, GPTConfig, return_tokenizer=False):
+    """Load model from checkpoint"""
+    print(f"Loading model from checkpoint...")
+    model_args = checkpoint['model_args']
+    gptconf = GPTConfig(**model_args)
+    model = GPT(gptconf)
     
-    for k in list(state_dict.keys()):
+    # Load model state
+    state_dict = checkpoint['model']
+    
+    # Fix key prefixes if needed (for models saved with DDP)
+    unwanted_prefix = '_orig_mod.'
+    for k, v in list(state_dict.items()):
         if k.startswith(unwanted_prefix):
             state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
     
     model.load_state_dict(state_dict)
-    
+    model.to(device)
+
     iter_num = checkpoint.get('iter_num', 0)
     if train_adversarially:
         iter_num = 0
     best_val_loss = checkpoint.get('best_val_loss', float('inf'))
     
-    return model, iter_num, best_val_loss
+    # Get encoder info
+    if return_tokenizer and 'config' in checkpoint and checkpoint['config'].get('dataset'):
+        data_dir = os.path.join('data', checkpoint['config']['dataset'])
+        meta_path = os.path.join(data_dir, 'meta.pkl')
+        if os.path.exists(meta_path):
+            with open(meta_path, 'rb') as f:
+                meta = pickle.load(f)
+            encoder_path = os.path.join(data_dir, 'encoder.pkl')
+            if os.path.exists(encoder_path):
+                with open(encoder_path, 'rb') as f:
+                    encoder = pickle.load(f)
+    
+    # If no encoder available, return None for encoder
+    if return_tokenizer:
+        return model, gptconf, encoder, iter_num, best_val_loss
+    else:
+        return model, gptconf, iter_num, best_val_loss
 
-def load_model_from_huggingface(model, config, device):
+def load_model_from_huggingface(model_id, device, GPT, GPTConfig, return_tokenizer=False):
     """
-    Load the TinyStories-33M model from HuggingFace and convert to our model format.
+    Load a model from HuggingFace and convert to our model format.
     """
-    print("Loading TinyStories-33M from HuggingFace...")
-    hf_model = AutoModelForCausalLM.from_pretrained('roneneldan/TinyStories-33M')
+    print(f"Loading {model_id} from HuggingFace...")
+    hf_model = AutoModelForCausalLM.from_pretrained(model_id)
+    hf_model.to(device)
     
-    # Create state dict mapping from HF model to our model
-    state_dict = {}
-    
-    # Map transformer weights
-    # Embeddings
-    state_dict['transformer.wte.weight'] = hf_model.transformer.wte.weight.clone()
-    state_dict['transformer.wpe.weight'] = hf_model.transformer.wpe.weight.clone()
-    
-    # Transformer blocks
-    for i in range(config.n_layer):
-        # Attention weights
-        state_dict[f'transformer.h.{i}.attn.c_attn.weight'] = torch.cat([
-            hf_model.transformer.h[i].attn.attention.q_proj.weight,
-            hf_model.transformer.h[i].attn.attention.k_proj.weight,
-            hf_model.transformer.h[i].attn.attention.v_proj.weight
-        ], dim=0)
-        if hasattr(hf_model.transformer.h[i].attn.attention.q_proj, 'bias') and hf_model.transformer.h[i].attn.attention.q_proj.bias is not None:
-            state_dict[f'transformer.h.{i}.attn.c_attn.bias'] = torch.cat([
-                hf_model.transformer.h[i].attn.attention.q_proj.bias,
-                hf_model.transformer.h[i].attn.attention.k_proj.bias,
-                hf_model.transformer.h[i].attn.attention.v_proj.bias
-            ], dim=0)
-        else:
-            state_dict[f'transformer.h.{i}.attn.c_attn.bias'] = torch.zeros(3 * hf_model.transformer.h[i].attn.attention.k_proj.in_features)
-        state_dict[f'transformer.h.{i}.attn.c_proj.weight'] = hf_model.transformer.h[i].attn.attention.out_proj.weight.clone()
-        if hasattr(hf_model.transformer.h[i].attn.attention.out_proj, 'bias') and hf_model.transformer.h[i].attn.attention.out_proj.bias is not None:
-            state_dict[f'transformer.h.{i}.attn.c_proj.bias'] = hf_model.transformer.h[i].attn.attention.out_proj.bias.clone()
-        else:
-            state_dict[f'transformer.h.{i}.attn.c_proj.bias'] = torch.zeros(hf_model.transformer.h[i].attn.attention.out_proj.in_features)
-        
-        # MLP weights
-        state_dict[f'transformer.h.{i}.mlp.c_fc.weight'] = hf_model.transformer.h[i].mlp.c_fc.weight.clone()
-        state_dict[f'transformer.h.{i}.mlp.c_fc.bias'] = hf_model.transformer.h[i].mlp.c_fc.bias.clone()
-        state_dict[f'transformer.h.{i}.mlp.c_proj.weight'] = hf_model.transformer.h[i].mlp.c_proj.weight.clone()
-        state_dict[f'transformer.h.{i}.mlp.c_proj.bias'] = hf_model.transformer.h[i].mlp.c_proj.bias.clone()
-        
-        # LayerNorms
-        state_dict[f'transformer.h.{i}.ln_1.weight'] = hf_model.transformer.h[i].ln_1.weight.clone()
-        state_dict[f'transformer.h.{i}.ln_1.bias'] = hf_model.transformer.h[i].ln_1.bias.clone()
-        state_dict[f'transformer.h.{i}.ln_2.weight'] = hf_model.transformer.h[i].ln_2.weight.clone()
-        state_dict[f'transformer.h.{i}.ln_2.bias'] = hf_model.transformer.h[i].ln_2.bias.clone()
-    
-    # Final layer norm
-    state_dict['transformer.ln_f.weight'] = hf_model.transformer.ln_f.weight.clone()
-    state_dict['transformer.ln_f.bias'] = hf_model.transformer.ln_f.bias.clone()
-    
-    # LM head
-    state_dict['lm_head.weight'] = hf_model.lm_head.weight.clone()
+    if return_tokenizer:
+        tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+    hf_config = hf_model.config
+    model_args = GPTConfig(
+        n_layer=hf_config.num_layers,
+        n_head=hf_config.num_heads,
+        n_embd=hf_config.hidden_size,
+        block_size=hf_config.max_position_embeddings,
+        bias=True,
+        vocab_size=hf_config.vocab_size,
+        qkv_bias=False,
+        window_size=hf_config.window_size,
+        attention_layers=hf_config.attention_layers,
+        attn_dropout=hf_config.attention_dropout,
+        resid_dropout=hf_config.resid_dropout,
+    )
+    model = GPT(model_args)
     
     # Load state dict into our model
-    model.load_state_dict(state_dict)
-    target_block_size = config.block_size
-    model.crop_block_size(target_block_size)
+    model.load_state_dict(hf_model.state_dict())
+    # target_block_size = config.block_size
+    # model.crop_block_size(target_block_size)
     model.to(device)
     
-    return model
+    if return_tokenizer:
+        return model, model_args, tokenizer
+    else:
+        return model, model_args
 
 def initialize_probes(config, device, checkpoint=None, ProbeCluster=None):
     """Initialize probe cluster if needed."""

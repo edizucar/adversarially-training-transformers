@@ -11,10 +11,11 @@ import torch
 import math
 from contextlib import nullcontext
 from itertools import zip_longest
-# from model import GPTConfig, GPT
-from model_test import GPTConfig, GPT
+from model import GPTConfig, GPT
 from config import TrainingConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+from utils import load_model_from_checkpoint, load_model_from_huggingface
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Run inference with a GPT model checkpoint')
@@ -43,79 +44,6 @@ def setup_pytorch(seed, device_type):
     ptdtype = torch.float16 if device_type == 'cuda' else torch.float32
     ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
     return ctx, ptdtype
-
-def load_model_from_checkpoint(checkpoint_path, device):
-    """Load model from checkpoint"""
-    print(f"Loading model from {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    
-    # Extract model arguments
-    model_args = checkpoint['model_args']
-    gptconf = GPTConfig(**model_args)
-    model = GPT(gptconf)
-    
-    # Load model state
-    state_dict = checkpoint['model']
-    
-    # Fix key prefixes if needed (for models saved with DDP)
-    unwanted_prefix = '_orig_mod.'
-    for k, v in list(state_dict.items()):
-        if k.startswith(unwanted_prefix):
-            state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
-    
-    model.load_state_dict(state_dict)
-    model.to(device)
-    model.eval()
-    
-    # Get encoder info
-    if 'config' in checkpoint and checkpoint['config'].get('dataset'):
-        data_dir = os.path.join('data', checkpoint['config']['dataset'])
-        meta_path = os.path.join(data_dir, 'meta.pkl')
-        if os.path.exists(meta_path):
-            with open(meta_path, 'rb') as f:
-                meta = pickle.load(f)
-            # Load encoder if available
-            encoder_path = os.path.join(data_dir, 'encoder.pkl')
-            if os.path.exists(encoder_path):
-                with open(encoder_path, 'rb') as f:
-                    encoder = pickle.load(f)
-                return model, encoder
-    
-    # If no encoder available, return None for encoder
-    return model, None
-
-def load_model_from_huggingface(model_id, device):
-    """
-    Load a model from HuggingFace and convert to our model format.
-    """
-    print(f"Loading {model_id} from HuggingFace...")
-    hf_model = AutoModelForCausalLM.from_pretrained(model_id)
-    hf_model.to(device)
-    
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
-
-    hf_config = hf_model.config
-    model_args = GPTConfig(
-        n_layer=hf_config.num_layers,
-        n_head=hf_config.num_heads,
-        n_embd=hf_config.hidden_size,
-        block_size=hf_config.max_position_embeddings,
-        bias=True,
-        vocab_size=hf_config.vocab_size,
-    )
-    model_args.qkv_bias = False
-    model_args.window_size = hf_config.window_size
-    model_args.attn_dropout = hf_config.attention_dropout
-    model_args.resid_dropout = hf_config.resid_dropout
-    model_args.attention_layers = hf_config.attention_layers
-    
-    model = GPT(model_args)
-    
-    # Load state dict into our model
-    model.load_state_dict(hf_model.state_dict())
-    model.to(device)
-    
-    return model, tokenizer
 
 def encode_prompt(prompt, encoder, device):
     """Encode the prompt to token IDs"""
@@ -214,9 +142,9 @@ def main():
     
     # Load model and encoder
     if args.huggingface:
-        model, encoder = load_model_from_huggingface(args.huggingface, device)
+        model, model_args, encoder = load_model_from_huggingface(args.huggingface, device, GPT, GPTConfig, return_tokenizer=True)
     else:
-        model, encoder = load_model_from_checkpoint(args.checkpoint, device)
+        model, model_args, encoder, _, _ = load_model_from_checkpoint(args.checkpoint, device, GPT, GPTConfig, return_tokenizer=True)
     
     # Process the prompt
     prompt_tokens = encode_prompt(args.prompt, encoder, device)

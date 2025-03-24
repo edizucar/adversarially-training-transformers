@@ -249,7 +249,7 @@ def test_huggingface_model_loading(model_id="roneneldan/TinyStories-33M", device
     Test loading a model from HuggingFace and verify the weight loading was correct
     """
     from transformers import AutoModelForCausalLM, AutoTokenizer
-    from model_test import GPTConfig, GPT
+    from model import GPTConfig, GPT
     
     print(f"Testing HuggingFace model loading for {model_id}")
     
