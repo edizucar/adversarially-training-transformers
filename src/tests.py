@@ -1,11 +1,12 @@
+import os
+import re
+import math
+import json
+import torch
+import random
+import tiktoken
 import argparse
 import colorama
-import json
-import os
-import random
-import re
-import tiktoken
-import torch
 from colorama import Fore, Style
 from datasets import load_dataset
 from pathlib import Path
@@ -154,6 +155,143 @@ def test_generation_speed(checkpoint_path, num_tokens=100, num_samples=5, temper
     
     return avg_speed
 
+def debug_forward(my_model, hf_model, input_ids):
+    """
+    Debug forward pass comparison between HF model and model it's state_dict is loaded into
+    """
+    # Get embeddings
+    my_emb = my_model.transformer.wte(input_ids) + my_model.transformer.wpe(torch.arange(input_ids.size(1), device=input_ids.device))
+    hf_emb = hf_model.transformer.wte(input_ids) + hf_model.transformer.wpe(torch.arange(input_ids.size(1), device=input_ids.device))
+    
+    print(f"Embedding diff: {(my_emb - hf_emb).abs().max().item()}")
+    
+    # Track layer outputs
+    my_x = my_emb
+    hf_x = hf_emb
+    
+    for i in range(len(my_model.transformer.h)):
+        # Get layer outputs from your model
+        my_attn_out = my_model.transformer.h[i].attn(my_model.transformer.h[i].ln_1(my_x))
+        my_x_temp = my_x + my_attn_out
+        my_x_next = my_x_temp + my_model.transformer.h[i].mlp(my_model.transformer.h[i].ln_2(my_x_temp))
+        
+        # Get layer outputs from HF model
+        hf_attn_out = hf_model.transformer.h[i].attn(hf_model.transformer.h[i].ln_1(hf_x))
+        hf_x_temp = hf_x + hf_attn_out[0]
+        hf_x_next = hf_x_temp + hf_model.transformer.h[i].mlp(hf_model.transformer.h[i].ln_2(hf_x_temp))
+
+        # Test attention output on each other's mlp
+        my_attn_out_mlp = my_model.transformer.h[i].mlp(my_model.transformer.h[i].ln_2(hf_x_temp))
+        hf_attn_out_mlp = hf_model.transformer.h[i].mlp(hf_model.transformer.h[i].ln_2(hf_x_temp))
+        
+        print(f"Layer {i} attention diff: {(my_attn_out - hf_attn_out[0]).abs().max().item()}")
+        print(f"Layer {i} output diff: {(my_x_next - hf_x_next).abs().max().item()}")
+        print(f"Layer {i} mlp diff: {(my_attn_out_mlp - hf_attn_out_mlp).abs().max().item()}")
+        
+        my_x = my_x_next
+        hf_x = hf_x_next
+    
+    # Final layer norm
+    my_final = my_model.transformer.ln_f(my_x)
+    hf_final = hf_model.transformer.ln_f(hf_x)
+    print(f"Final LN diff: {(my_final - hf_final).abs().max().item()}")
+    
+    # Logits
+    my_logits = my_model.lm_head(my_final)
+    hf_logits = hf_model.lm_head(hf_final)
+    print(f"Logit diff: {(my_logits - hf_logits).abs().max().item()}")
+
+def compare_qkv(my_model, hf_model, input_ids, layer_idx=0):
+    """
+    Compare QKV projections between HF model and model it's state_dict is loaded into
+    """
+    # Get embeddings
+    my_emb = my_model.transformer.wte(input_ids) + my_model.transformer.wpe(torch.arange(input_ids.size(1), device=input_ids.device))
+    hf_emb = hf_model.transformer.wte(input_ids) + hf_model.transformer.wpe(torch.arange(input_ids.size(1), device=input_ids.device))
+    
+    # Get layer norm output
+    my_ln1 = my_model.transformer.h[layer_idx].ln_1(my_emb)
+    hf_ln1 = hf_model.transformer.h[layer_idx].ln_1(hf_emb)
+    
+    # QKV projections
+    my_q = my_model.transformer.h[layer_idx].attn.attention.q_proj(my_ln1)
+    my_k = my_model.transformer.h[layer_idx].attn.attention.k_proj(my_ln1)
+    my_v = my_model.transformer.h[layer_idx].attn.attention.v_proj(my_ln1)
+    
+    hf_q = hf_model.transformer.h[layer_idx].attn.attention.q_proj(hf_ln1)
+    hf_k = hf_model.transformer.h[layer_idx].attn.attention.k_proj(hf_ln1)
+    hf_v = hf_model.transformer.h[layer_idx].attn.attention.v_proj(hf_ln1)
+    
+    print(f"Q diff: {(my_q - hf_q).abs().max().item()}")
+    print(f"K diff: {(my_k - hf_k).abs().max().item()}")
+    print(f"V diff: {(my_v - hf_v).abs().max().item()}")
+    
+    # Check attention product
+    B, T, C = my_ln1.size()
+    num_heads = my_model.transformer.h[layer_idx].attn.attention.n_head
+    head_size = C // num_heads
+    
+    my_q = my_q.view(B, T, num_heads, head_size).transpose(1, 2)
+    my_k = my_k.view(B, T, num_heads, head_size).transpose(1, 2)
+    my_v = my_v.view(B, T, num_heads, head_size).transpose(1, 2)
+    
+    hf_q = hf_q.view(B, T, num_heads, head_size).transpose(1, 2)
+    hf_k = hf_k.view(B, T, num_heads, head_size).transpose(1, 2)
+    hf_v = hf_v.view(B, T, num_heads, head_size).transpose(1, 2)
+    
+    my_attn = (my_q @ my_k.transpose(-2, -1)) * (1.0 / math.sqrt(my_k.size(-1)))
+    hf_attn = (hf_q @ hf_k.transpose(-2, -1)) * (1.0 / math.sqrt(hf_k.size(-1)))
+    
+    print(f"Attention score diff: {(my_attn - hf_attn).abs().max().item()}")
+
+def test_huggingface_model_loading(model_id="roneneldan/TinyStories-33M", device="cuda"):
+    """
+    Test loading a model from HuggingFace and verify the weight loading was correct
+    """
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from model_test import GPTConfig, GPT
+    
+    print(f"Testing HuggingFace model loading for {model_id}")
+    
+    # Load HuggingFace model
+    hf_model = AutoModelForCausalLM.from_pretrained(model_id)
+    hf_model.to(device)
+    
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+    # Create config for our model based on HF model config
+    hf_config = hf_model.config
+    model_args = GPTConfig(
+        n_layer=hf_config.num_layers,
+        n_head=hf_config.num_heads,
+        n_embd=hf_config.hidden_size,
+        block_size=hf_config.max_position_embeddings,
+        bias=True,
+        vocab_size=hf_config.vocab_size,
+    )
+    model_args.qkv_bias = False
+    model_args.window_size = hf_config.window_size
+    model_args.attn_dropout = hf_config.attention_dropout
+    model_args.resid_dropout = hf_config.resid_dropout
+    model_args.attention_layers = hf_config.attention_layers
+    
+    # Create our model
+    my_model = GPT(model_args)
+    
+    # Load state dict from HF model into our model
+    my_model.load_state_dict(hf_model.state_dict())
+    my_model.to(device)
+
+    # Run comparison tests
+    test_input = torch.tensor([[1, 2, 3, 4, 5]], device=device)
+    with torch.no_grad():
+        print("\n===== QKV COMPARISON =====")
+        compare_qkv(my_model, hf_model, test_input, layer_idx=0)
+        print("\n===== FULL FORWARD PASS COMPARISON =====")
+        debug_forward(my_model, hf_model, test_input)
+    
+    return my_model, hf_model, tokenizer
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--all", action="store_true")
@@ -161,6 +299,9 @@ if __name__ == "__main__":
     parser.add_argument("--quote_detector_speed", action="store_true")
     parser.add_argument("--test_dataset_odd_quotes", action="store_true")
     parser.add_argument("--test_generation_speed", action="store_true")
+    parser.add_argument("--test_huggingface", action="store_true", help="Test loading a model from HuggingFace and verify the weight loading was correct")
+    parser.add_argument("--huggingface_model", type=str, default="roneneldan/TinyStories-33M", 
+                      help="HuggingFace model ID to test")
     args = parser.parse_args()
 
     if args.all or args.quote_detector:
@@ -175,3 +316,5 @@ if __name__ == "__main__":
     if args.all or args.test_generation_speed:
         checkpoint_path = "../checkpoints/tiny_stories/ckpt.pt"
         test_generation_speed(checkpoint_path)
+    if args.all or args.test_huggingface:
+        test_huggingface_model_loading(model_id=args.huggingface_model)

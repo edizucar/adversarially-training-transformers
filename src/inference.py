@@ -86,9 +86,9 @@ def load_model_from_checkpoint(checkpoint_path, device):
 
 def load_model_from_huggingface(model_id, device):
     """
-    Load the TinyStories-33M model from HuggingFace and convert to our model format.
+    Load a model from HuggingFace and convert to our model format.
     """
-    print("Loading TinyStories-33M from HuggingFace...")
+    print(f"Loading {model_id} from HuggingFace...")
     hf_model = AutoModelForCausalLM.from_pretrained(model_id)
     hf_model.to(device)
     
@@ -114,104 +114,8 @@ def load_model_from_huggingface(model_id, device):
     # Load state dict into our model
     model.load_state_dict(hf_model.state_dict())
     model.to(device)
-
-    test_input = torch.tensor([[1, 2, 3, 4, 5]], device=device)
-    with torch.no_grad():
-        print("\n===== QKV COMPARISON =====")
-        compare_qkv(model, hf_model, test_input, layer_idx=0)
-        print("\n===== FULL FORWARD PASS COMPARISON =====")
-        debug_forward(model, hf_model, test_input)
     
     return model, tokenizer
-
-def debug_forward(my_model, hf_model, input_ids):
-    """
-    Debug forward pass comparison between HF model and model it's state_dict is loaded into
-    """
-    # Get embeddings
-    my_emb = my_model.transformer.wte(input_ids) + my_model.transformer.wpe(torch.arange(input_ids.size(1), device=input_ids.device))
-    hf_emb = hf_model.transformer.wte(input_ids) + hf_model.transformer.wpe(torch.arange(input_ids.size(1), device=input_ids.device))
-    
-    print(f"Embedding diff: {(my_emb - hf_emb).abs().max().item()}")
-    
-    # Track layer outputs
-    my_x = my_emb
-    hf_x = hf_emb
-    
-    for i in range(len(my_model.transformer.h)):
-        # Get layer outputs from your model
-        my_attn_out = my_model.transformer.h[i].attn(my_model.transformer.h[i].ln_1(my_x))
-        my_x_temp = my_x + my_attn_out
-        my_x_next = my_x_temp + my_model.transformer.h[i].mlp(my_model.transformer.h[i].ln_2(my_x_temp))
-        
-        # Get layer outputs from HF model
-        hf_attn_out = hf_model.transformer.h[i].attn(hf_model.transformer.h[i].ln_1(hf_x))
-        hf_x_temp = hf_x + hf_attn_out[0]
-        hf_x_next = hf_x_temp + hf_model.transformer.h[i].mlp(hf_model.transformer.h[i].ln_2(hf_x_temp))
-
-        # Test attention output on each other's mlp
-        my_attn_out_mlp = my_model.transformer.h[i].mlp(my_model.transformer.h[i].ln_2(hf_x_temp))
-        hf_attn_out_mlp = hf_model.transformer.h[i].mlp(hf_model.transformer.h[i].ln_2(hf_x_temp))
-        
-        print(f"Layer {i} attention diff: {(my_attn_out - hf_attn_out[0]).abs().max().item()}")
-        print(f"Layer {i} output diff: {(my_x_next - hf_x_next).abs().max().item()}")
-        print(f"Layer {i} mlp diff: {(my_attn_out_mlp - hf_attn_out_mlp).abs().max().item()}")
-        
-        my_x = my_x_next
-        hf_x = hf_x_next
-    
-    # Final layer norm
-    my_final = my_model.transformer.ln_f(my_x)
-    hf_final = hf_model.transformer.ln_f(hf_x)
-    print(f"Final LN diff: {(my_final - hf_final).abs().max().item()}")
-    
-    # Logits
-    my_logits = my_model.lm_head(my_final)
-    hf_logits = hf_model.lm_head(hf_final)
-    print(f"Logit diff: {(my_logits - hf_logits).abs().max().item()}")
-
-def compare_qkv(my_model, hf_model, input_ids, layer_idx=0):
-    """
-    Compare QKV projections between HF model and model it's state_dict is loaded into
-    """
-    # Get embeddings
-    my_emb = my_model.transformer.wte(input_ids) + my_model.transformer.wpe(torch.arange(input_ids.size(1), device=input_ids.device))
-    hf_emb = hf_model.transformer.wte(input_ids) + hf_model.transformer.wpe(torch.arange(input_ids.size(1), device=input_ids.device))
-    
-    # Get layer norm output
-    my_ln1 = my_model.transformer.h[layer_idx].ln_1(my_emb)
-    hf_ln1 = hf_model.transformer.h[layer_idx].ln_1(hf_emb)
-    
-    # QKV projections
-    my_q = my_model.transformer.h[layer_idx].attn.attention.q_proj(my_ln1)
-    my_k = my_model.transformer.h[layer_idx].attn.attention.k_proj(my_ln1)
-    my_v = my_model.transformer.h[layer_idx].attn.attention.v_proj(my_ln1)
-    
-    hf_q = hf_model.transformer.h[layer_idx].attn.attention.q_proj(hf_ln1)
-    hf_k = hf_model.transformer.h[layer_idx].attn.attention.k_proj(hf_ln1)
-    hf_v = hf_model.transformer.h[layer_idx].attn.attention.v_proj(hf_ln1)
-    
-    print(f"Q diff: {(my_q - hf_q).abs().max().item()}")
-    print(f"K diff: {(my_k - hf_k).abs().max().item()}")
-    print(f"V diff: {(my_v - hf_v).abs().max().item()}")
-    
-    # Check attention product
-    B, T, C = my_ln1.size()
-    num_heads = my_model.transformer.h[layer_idx].attn.attention.n_head
-    head_size = C // num_heads
-    
-    my_q = my_q.view(B, T, num_heads, head_size).transpose(1, 2)
-    my_k = my_k.view(B, T, num_heads, head_size).transpose(1, 2)
-    my_v = my_v.view(B, T, num_heads, head_size).transpose(1, 2)
-    
-    hf_q = hf_q.view(B, T, num_heads, head_size).transpose(1, 2)
-    hf_k = hf_k.view(B, T, num_heads, head_size).transpose(1, 2)
-    hf_v = hf_v.view(B, T, num_heads, head_size).transpose(1, 2)
-    
-    my_attn = (my_q @ my_k.transpose(-2, -1)) * (1.0 / math.sqrt(my_k.size(-1)))
-    hf_attn = (hf_q @ hf_k.transpose(-2, -1)) * (1.0 / math.sqrt(hf_k.size(-1)))
-    
-    print(f"Attention score diff: {(my_attn - hf_attn).abs().max().item()}")
 
 def encode_prompt(prompt, encoder, device):
     """Encode the prompt to token IDs"""
