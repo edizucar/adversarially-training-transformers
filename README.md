@@ -1,5 +1,7 @@
 # How to Run
 
+## Setup
+
 First install the dependencies and optionally download a pre-trained checkpoint:
 
 ```bash
@@ -12,25 +14,47 @@ Now, if you want to run this from scratch, run the following command to prepare 
 python data/<dataset>/prepare.py
 ```
 
-Then (or if you have the dataset already prepared), run the training script with the following command:
+## Training
+
+If you want to only train the probes against a pre-trained model (you will need to have a checkpoint or huggingface model for this), run the following command:
+
+```bash
+python train.py --config config/<config>.yaml
+```
+
+If you want to train the model from scratch, run the training script with the following command:
 
 ```bash
 python train.py
 ```
 
-If you already have a checkpoint, you can resume training with the following command:
+## Hyperparameter Sweeps
+
+If you want to run a hyperparameter sweep, run the following command:
 
 ```bash
-python train.py --resume
+wandb sweep config/sweep.yaml
 ```
 
-If you want to only train the probes against a pre-trained model (you will need to have a checkpoint for this), run the following command:
+The output from that will give you a command that looks like this:
 
 ```bash
-python train.py config/<config>.yaml
+wandb agent your-username/your-project/sweep_id
 ```
 
-# Monitoring
+Run that command to start the sweep.
+
+## Inference
+
+If you want to run inference on a model, run the following command. Use the `--checkpoint` flag to load a checkpoint from a file, or the `--huggingface` flag to load a model from HuggingFace.
+
+```bash
+cd src
+
+python inference.py [--checkpoint <path_to_checkpoint> | --huggingface <huggingface_model_id>]
+```
+
+## Monitoring
 
 If you want to monitor the GPU utilization, run the following command in a separate terminal (e.g. a new tmux pane):
 
