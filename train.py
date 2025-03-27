@@ -119,9 +119,9 @@ def main():
             utils.log_evaluation_results(eval_loss, probe_losses, iter_num, lr, config)
 
             # Save checkpoint if needed
-            if iter_num > 0 and ((not config.never_save_checkpoint and eval_loss['val'] < best_val_loss) or iter_num > config.max_iters):
+            if iter_num > 0 and (not config.never_save_checkpoint and eval_loss['val'] < best_val_loss):
                 best_val_loss = eval_loss['val']
-                utils.save_checkpoint(model, optimizer, model_args, iter_num, best_val_loss, config, probe_cluster, final=True)
+                utils.save_checkpoint(model, optimizer, model_args, iter_num, best_val_loss, config, probe_cluster)
         
         # Get batch
         timer.start('data_prep')
@@ -177,7 +177,7 @@ def main():
     timer.summarize()
 
     print("Saving final checkpoint...")
-    utils.save_checkpoint(model, optimizer, model_args, iter_num, best_val_loss, config, probe_cluster)
+    utils.save_checkpoint(model, optimizer, model_args, iter_num, best_val_loss, config, probe_cluster, final=True)
 
     # At the end of your main function, right before wandb.finish()
     if config.wandb_log and not stop_requested[0]:

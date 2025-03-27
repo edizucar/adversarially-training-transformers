@@ -1,10 +1,10 @@
 # Output configuration
 source_dir: 'checkpoints/tiny_stories'
 dest_dir: 'checkpoints/tiny_stories_adv'
-max_iters: 2000
-eval_interval: 400
+max_iters: 50
+eval_interval: 45
 eval_iters: 20
-log_interval: 400
+log_interval: 45
 
 # Checkpointing
 always_save_checkpoint: false
@@ -37,7 +37,7 @@ bias: true
 # Optimizer
 learning_rate: 1e-3
 decay_lr: true
-lr_decay_iters: 2000
+lr_decay_iters: 50
 min_lr: 1e-4
 beta2: 0.99
 warmup_iters: 0 # skip warmup when not training the model

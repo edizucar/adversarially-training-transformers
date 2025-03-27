@@ -1,6 +1,8 @@
 pip install -r requirements.txt
 pip install flash-attn --no-build-isolation
 
+python data/tiny_stories/prepare.py
+
 if [ "$1" = "--get-checkpoint" ]; then
     mkdir -p ./checkpoints/backup-checkpoint-24-02/ && wget -O ./checkpoints/backup-checkpoint-24-02/ckpt.pt https://github.com/edizucar/adversarially-training-transformers/releases/download/pretrain_checkpoint/backup_checkpoint_24_02_ckpt.pt
     mkdir -p ./checkpoints/openwebtext/ && wget -O ./checkpoints/openwebtext/ckpt.pt https://github.com/edizucar/adversarially-training-transformers/releases/download/pretrain_checkpoint/openwebtext_ckpt.pt
