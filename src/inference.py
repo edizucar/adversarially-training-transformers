@@ -20,7 +20,7 @@ from utils import load_model_from_checkpoint, load_model_from_huggingface
 def parse_args():
     parser = argparse.ArgumentParser(description='Run inference with a GPT model checkpoint')
     parser.add_argument('--checkpoint', type=str, default="../checkpoints/tiny_stories/ckpt.pt", help='Path to checkpoint file')
-    parser.add_argument('--huggingface', type=str, default="roneneldan/TinyStories-33M", help='HuggingFace model ID')
+    parser.add_argument('--huggingface', type=str, default=None, help='HuggingFace model ID')
     parser.add_argument('--prompt', type=str, default="Once upon a time there was", help='Text prompt to start generation')
     parser.add_argument('--max_new_tokens', type=int, default=100, help='Maximum number of tokens to generate')
     parser.add_argument('--temperature', type=float, default=0.8, help='Sampling temperature')

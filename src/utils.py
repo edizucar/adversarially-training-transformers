@@ -395,9 +395,12 @@ def get_model_args(config, data_dir, device):
             config.vocab_size = meta['vocab_size']
         return config, None
 
-def load_model_from_checkpoint(checkpoint, device, GPT, GPTConfig, return_tokenizer=False):
+def load_model_from_checkpoint(checkpoint, device, GPT, GPTConfig, train_adversarially=False, return_tokenizer=False):
     """Load model from checkpoint"""
-    print(f"Loading model from checkpoint...")
+    if isinstance(checkpoint, str):
+        print(f"Loading model from checkpoint...")
+        checkpoint = torch.load(checkpoint, map_location=device)
+
     model_args = checkpoint['model_args']
     gptconf = GPTConfig(**model_args)
     model = GPT(gptconf)
@@ -420,14 +423,18 @@ def load_model_from_checkpoint(checkpoint, device, GPT, GPTConfig, return_tokeni
     best_val_loss = checkpoint.get('best_val_loss', float('inf'))
     
     # Get encoder info
+    encoder = None
     if return_tokenizer and 'config' in checkpoint and checkpoint['config'].get('dataset'):
+        print("Past check 1")
         data_dir = os.path.join('data', checkpoint['config']['dataset'])
         meta_path = os.path.join(data_dir, 'meta.pkl')
         if os.path.exists(meta_path):
+            print("Past check 2")
             with open(meta_path, 'rb') as f:
                 meta = pickle.load(f)
             encoder_path = os.path.join(data_dir, 'encoder.pkl')
             if os.path.exists(encoder_path):
+                print("Past check 3")
                 with open(encoder_path, 'rb') as f:
                     encoder = pickle.load(f)
     
@@ -550,10 +557,8 @@ def save_checkpoint(model, optimizer, model_args, iter_num, best_val_loss, confi
         'model_args': model_args,
         'iter_num': iter_num,
         'best_val_loss': best_val_loss,
+        'config': vars(config),
     }
-
-    if final:
-        checkpoint['config'] = vars(config) if hasattr(config, '__dict__') else dict(config)
 
     if probe_cluster is not None:
         checkpoint['probe_state'] = probe_cluster.state_dict()
