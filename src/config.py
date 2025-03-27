@@ -57,7 +57,8 @@ class TrainingConfig:
     lambda_adversarial: float = 1e-3
     probe_learning_rate: float = 1e-3
     probe_type: str = "linear"
-    phi_probe_steps_per_model_update: int = 1  # steps to train probe per model update
+    phi_probe_steps_per_model_update: int = 1
+    model_update_counter = 0 # if phi < 1
     
     # training components
     train_model: bool = True

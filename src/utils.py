@@ -628,6 +628,9 @@ def debug_print_batch(X, Y, probe_targets):
 def run_single_training_step(model, probe_cluster, optimizer, scaler, 
                            X, Y, probe_targets, config, ctx, iter_num, get_batch_fn):
     """Execute a single training step."""
+    probe_updates_per_step = max(1, config.phi_probe_steps_per_model_update)
+    model_steps_per_probe_update = max(1, int(1.0 / config.phi_probe_steps_per_model_update))
+
     # Zero gradients if first iteration
     if iter_num == 0:
         optimizer.zero_grad(set_to_none=True)
@@ -651,6 +654,7 @@ def run_single_training_step(model, probe_cluster, optimizer, scaler,
     if config.train_model:
         scaler.scale(total_loss).backward()
 
+        model_update = False
         if (iter_num + 1) % config.gradient_accumulation_steps == 0:
             # Gradient clipping
             if config.grad_clip != 0.0:
@@ -661,27 +665,46 @@ def run_single_training_step(model, probe_cluster, optimizer, scaler,
             scaler.step(optimizer)
             scaler.update()
 
+            config.model_update_counter += 1
+            model_update = True
+
             # Zero gradients
             optimizer.zero_grad(set_to_none=True)
             if config.train_probes:
                 probe_cluster.zero_grad_probes()
     
     # Update probes based on phi_probe_steps_per_model_update
-    if config.train_probes and config.train_adversarially:
-        update_probes(model, probe_cluster, activations, probe_targets, 
-                      config, scaler, get_batch_fn)
+    if config.train_probes and config.train_adversarially and model_update:
+        if config.model_update_counter % model_steps_per_probe_update == 0:
+            config.model_update_counter = 0
+            update_probes(model, probe_cluster, activations, probe_targets, 
+                          config, scaler, get_batch_fn, probe_updates_per_step)
                 
     return transformer_loss.item()
 
 def update_probes(model, probe_cluster, activations, probe_targets, 
-                 config, scaler, get_batch_fn):
-    """Update probes with current activations and possibly new batches."""
+                 config, scaler, get_batch_fn, num_updates=None):
+    """Update probes with current activations and possibly new batches.
+
+    Args:
+        model: The model to extract activations from
+        probe_cluster: The probe cluster to update
+        activations: Current model activations
+        probe_targets: Current probe targets
+        config: Training configuration
+        scaler: Gradient scaler for mixed precision
+        get_batch_fn: Function to get new batches
+        num_updates: Number of probe updates to perform (overrides config.phi_probe_steps_per_model_update)
+    """
+    if num_updates is None:
+        num_updates = max(1, config.phi_probe_steps_per_model_update)
+    
     # Simple probe update with detached activations
     with torch.no_grad():
         detached_activations = [act.detach() for act in activations]
     
     # Update probes multiple times per model update
-    for i in range(config.phi_probe_steps_per_model_update):
+    for i in range(num_updates):
         # Update probes with current batch
         probe_cluster.update_probes(
             detached_activations,
@@ -690,7 +713,7 @@ def update_probes(model, probe_cluster, activations, probe_targets,
         )
         
         # Get a new batch for next probe update if not the last one
-        if i < config.phi_probe_steps_per_model_update - 1:
+        if i < num_updates - 1:
             X_new, Y_new, probe_targets_new = get_batch_fn('train')
             with torch.no_grad():
                 # Get new activations without recomputing gradients
