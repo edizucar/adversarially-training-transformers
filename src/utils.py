@@ -425,16 +425,13 @@ def load_model_from_checkpoint(checkpoint, device, GPT, GPTConfig, train_adversa
     # Get encoder info
     encoder = None
     if return_tokenizer and 'config' in checkpoint and checkpoint['config'].get('dataset'):
-        print("Past check 1")
         data_dir = os.path.join('data', checkpoint['config']['dataset'])
         meta_path = os.path.join(data_dir, 'meta.pkl')
         if os.path.exists(meta_path):
-            print("Past check 2")
             with open(meta_path, 'rb') as f:
                 meta = pickle.load(f)
             encoder_path = os.path.join(data_dir, 'encoder.pkl')
             if os.path.exists(encoder_path):
-                print("Past check 3")
                 with open(encoder_path, 'rb') as f:
                     encoder = pickle.load(f)
     
@@ -455,6 +452,10 @@ def load_model_from_huggingface(model_id, device, GPT, GPTConfig, return_tokeniz
     if return_tokenizer:
         tokenizer = AutoTokenizer.from_pretrained(model_id)
 
+    scale_attention = True
+    if model_id == "roneneldan/TinyStories-33M":
+        scale_attention = False
+
     hf_config = hf_model.config
     model_args = GPTConfig(
         n_layer=hf_config.num_layers,
@@ -462,6 +463,7 @@ def load_model_from_huggingface(model_id, device, GPT, GPTConfig, return_tokeniz
         n_embd=hf_config.hidden_size,
         block_size=hf_config.max_position_embeddings,
         bias=True,
+        scale_attention=scale_attention,
         vocab_size=hf_config.vocab_size,
         qkv_bias=False,
         window_size=hf_config.window_size,

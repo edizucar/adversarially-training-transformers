@@ -38,6 +38,7 @@ class TrainingConfig:
     attn_dropout: float = 0.0
     resid_dropout: float = 0.0
     bias: bool = True
+    scale_attention: bool = True
     
     # optimizer
     learning_rate: float = 6e-4

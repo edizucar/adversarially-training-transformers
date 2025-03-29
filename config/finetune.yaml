@@ -1,7 +1,7 @@
 # Output configuration
 source_dir: 'checkpoints/tiny_stories'
-dest_dir: 'checkpoints/tiny_stories_adv'
-max_iters: 2000
+dest_dir: 'checkpoints/finetune'
+max_iters: 500
 eval_interval: 400
 eval_iters: 20
 log_interval: 400
@@ -13,7 +13,7 @@ never_save_checkpoint: false
 # Wandb logging
 wandb_log: true
 wandb_project: 'tiny-stories-train'
-wandb_run_name: 'mini-gpt-adversarial'
+wandb_run_name: 'mini-gpt-test-finetune'
 
 # Dataset config
 dataset: 'tiny_stories'
@@ -37,21 +37,21 @@ bias: false
 # Optimizer
 learning_rate: 3e-4
 decay_lr: true
-lr_decay_iters: 2000
+lr_decay_iters: 50
 min_lr: 3e-5
-beta2: 0.999
-warmup_iters: 0 # skip warmup when not training the model
+beta2: 0.99
+warmup_iters: 200
 
 # Training components
-train_probes: true
+train_probes: false
 train_model: true
 
 # Probe config
-probe_type: 'linear'
+probe_type: 'cosine'
 probe_learning_rate: 1e-3
-lambda_adversarial: 1e-5
-phi_probe_steps_per_model_update: 0.01
-train_adversarially: true
+lambda_adversarial: 1e-1
+phi_probe_steps_per_model_update: 1
+train_adversarially: false
 
 # Initialization
 init_from: 'huggingface'

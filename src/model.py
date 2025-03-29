@@ -60,6 +60,9 @@ class CausalAttention(nn.Module):
         self.register_buffer("bias", bias, persistent=False)
         self.register_buffer("masked_bias", torch.tensor(-1e9), persistent=False)
 
+        # attention scaling
+        self.scale_attention = config.scale_attention
+
     def forward(self, x):
         B, T, C = x.size()  # batch size, sequence length, embedding dim
 
@@ -75,7 +78,10 @@ class CausalAttention(nn.Module):
         
         # Compute attention weights
         # Scale dot-product
-        att = (q @ k.transpose(-2, -1))  # [B, nh, T, T]
+        if self.scale_attention:
+            att = (q @ k.transpose(-2, -1)) / math.sqrt(C // self.n_head) # [B, nh, T, T]
+        else:
+            att = (q @ k.transpose(-2, -1)) # [B, nh, T, T]
 
         # Apply causal mask (always needed for decoder-only models)
         causal_mask = self.bias[:, :, :T, :T]
@@ -158,10 +164,11 @@ class GPTConfig:
     n_embd: int = 768
     dropout: float = 0.0
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    scale_attention: bool = True
     qkv_bias: bool = True
     attn_dropout: float = 0.1
     resid_dropout: float = 0.1
-    window_size: int = 256,  # Local attention window size
+    window_size: int = 256  # Local attention window size
     attention_layers: list[str] = field(default_factory=lambda: ['global'] * 12)
 
 class GPT(nn.Module):
@@ -238,11 +245,12 @@ class GPT(nn.Module):
             # Use gradient checkpointing for transformer blocks
             for i, block in enumerate(self.transformer.h):                
                 # Apply checkpointing to save memory during backward pass
-                x_temp = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(block),
-                    x
-                )
-                x, block_activations = x_temp[0], x_temp[1]
+                x, block_activations = torch.utils.checkpoint.checkpoint(block, x)
+                # x_temp = torch.utils.checkpoint.checkpoint(
+                #     create_custom_forward(block),
+                #     x
+                # )
+                # x, block_activations = x_temp[0], x_temp[1]
                 activations.extend(block_activations)
         else:
             # Standard forward pass
@@ -253,8 +261,9 @@ class GPT(nn.Module):
         x = self.transformer.ln_f(x)
         
         if targets is not None:
-            logits = self.lm_head(x)
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            full_logits = self.lm_head(x)
+            loss = F.cross_entropy(full_logits.view(-1, full_logits.size(-1)), targets.view(-1), ignore_index=-1)
+            logits = full_logits[:, [-1], :]
         else:
             logits = self.lm_head(x[:, [-1], :])
             loss = None
