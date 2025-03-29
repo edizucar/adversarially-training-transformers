@@ -9,6 +9,6 @@ parameters:
   lambda_adversarial:
     values: [1e-5, 1e-3, 1e-2, 1.0]
   phi_probe_steps_per_model_update:
-    values: [0.01, 0.1, 1, 5]
+    values: [5]
   max_iters:
     values: [2000, 10000]

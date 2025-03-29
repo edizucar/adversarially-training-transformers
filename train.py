@@ -17,7 +17,7 @@ def parse_args():
     parser.add_argument('--eval-only', action='store_true', help='Run evaluation only')
     parser.add_argument('--no-wandb', action='store_true', help='Disable wandb logging')
     parser.add_argument('--lambda_adversarial', type=float, help='Lambda weighting of probe loss for adversarial training')
-    parser.add_argument('--phi_probe_steps_per_model_update', type=int, help='Phi probe steps per model update')
+    parser.add_argument('--phi_probe_steps_per_model_update', type=float, help='Phi probe steps per model update')
     parser.add_argument('--max_iters', type=int, help='Maximum number of iterations')
     return parser.parse_args()
 

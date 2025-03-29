@@ -699,7 +699,7 @@ def update_probes(model, probe_cluster, activations, probe_targets,
         num_updates: Number of probe updates to perform (overrides config.phi_probe_steps_per_model_update)
     """
     if num_updates is None:
-        num_updates = max(1, config.phi_probe_steps_per_model_update)
+        num_updates = int(max(1, config.phi_probe_steps_per_model_update))
     
     # Simple probe update with detached activations
     with torch.no_grad():
