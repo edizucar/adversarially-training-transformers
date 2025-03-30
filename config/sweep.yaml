@@ -7,7 +7,7 @@ parameters:
   config:
     value: 'config/adversarial.yaml'
   lambda_adversarial:
-    values: [1e-5, 1e-3, 1e-2, 1.0]
+    values: [0.01, 0.1, 0.3]
   phi_probe_steps_per_model_update:
     values: [0.01, 0.1, 1, 5]
   max_iters:
