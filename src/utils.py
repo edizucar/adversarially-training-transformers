@@ -572,6 +572,11 @@ def save_checkpoint(model, optimizer, model_args, iter_num, best_val_loss, confi
     print(f"Saving checkpoint to {filepath}")
     torch.save(checkpoint, filepath)
 
+    if final:
+        latest_filepath = os.path.join(config.dest_dir, 'latest.pt')
+        print(f"Also saving checkpoint to {latest_filepath}")
+        torch.save(checkpoint, latest_filepath)
+
 def setup_wandb(config):
     """Initialize wandb logging."""
     if os.environ.get('WANDB_SWEEP_ID'):
