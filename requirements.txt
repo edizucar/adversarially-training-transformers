@@ -1,6 +1,7 @@
 torch
 numpy==1.26.4
 transformers
+accelerate
 datasets
 tiktoken
 wandb
