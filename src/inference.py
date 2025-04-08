@@ -12,6 +12,8 @@ import math
 from colorama import Fore, Style
 from contextlib import nullcontext
 from itertools import zip_longest
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from probes import ProbeCluster
@@ -33,6 +35,7 @@ def parse_args():
     parser.add_argument('--run_probes', action='store_true', help='Whether to run probe inference on generated tokens')
     parser.add_argument('--probe_checkpoint', type=str, default=None, help='Optional separate checkpoint for probes')
     parser.add_argument('--probe_stride', type=int, default=5, help='Computes probe scores one out of every N tokens')
+    parser.add_argument('--probe_plot', action='store_true', help='Generate a heatmap visualization of probe scores')
     return parser.parse_args()
 
 def setup_pytorch(seed, device_type):
@@ -203,6 +206,106 @@ def format_probe_scores(scores, n_layer):
     
     return " | ".join(result)
 
+def plot_probe_heatmap(prompt_text, tokens, probe_scores, save_path='probe_plot.png'):
+    """
+    Generate a heatmap visualization of probe scores.
+    
+    Args:
+        prompt_text: Text of the prompt
+        tokens: List of token strings
+        probe_scores: List of probe scores for each token (None if not computed)
+        save_path: Path to save the plot
+    """
+    # Filter out tokens without probe scores
+    valid_indices = [i for i, scores in enumerate(probe_scores) if scores is not None]
+    valid_tokens = [tokens[i] for i in valid_indices]
+    valid_scores = [probe_scores[i] for i in valid_indices]
+    
+    if not valid_scores:
+        print("No probe scores to plot")
+        return
+    
+    # Convert scores to numpy array
+    score_array = np.array(valid_scores)
+    
+    # Determine if each token is in a quote
+    full_text = prompt_text + ''.join(tokens)
+    in_quote = []
+    quote_status = False
+    
+    for i in valid_indices:
+        # Get position of this token in the full text
+        pos = len(prompt_text) + len(''.join(tokens[:i]))
+        
+        # Check if we've passed an odd number of quotes before this position
+        quote_count = full_text[:pos].count('"')
+        current_quote_status = quote_count % 2 == 1
+        
+        in_quote.append(current_quote_status)
+    
+    # Create labels for the y-axis (tokens with quote indicators)
+    y_labels = []
+    for token, quoted in zip(valid_tokens, in_quote):
+        # Clean and truncate token for display
+        token_clean = token.replace('\n', '\\n').strip()
+        if len(token_clean) > 15:
+            token_clean = token_clean[:12] + '...'
+        
+        # No quote indicator in the label text anymore
+        y_labels.append(token_clean)
+    
+    # Create labels for the x-axis (probe names)
+    num_probes = len(valid_scores[0])
+    x_labels = []
+    for i in range(num_probes):
+        probe_type = 'attn' if i % 2 == 0 else 'MLP'
+        layer = i // 2
+        x_labels.append(f"{probe_type}-{layer}")
+    
+    # Create the plot
+    fig, ax = plt.subplots(figsize=(12, max(8, len(valid_tokens) * 0.3)))
+    
+    # Create a custom white-to-red colormap
+    colors = [(1, 1, 1), (1, 0.7, 0.5), (1, 0.4, 0.2), (1, 0, 0)]  # white -> light orange -> orange -> red
+    custom_cmap = mcolors.LinearSegmentedColormap.from_list('WhiteToRed', colors)
+    norm = mcolors.Normalize(vmin=0, vmax=1)  # Assuming scores are between 0 and 1
+    
+    # Fix reversed order by reversing the score array
+    score_array = np.flipud(score_array)
+    y_labels = y_labels[::-1]  # Also reverse the labels
+    in_quote = in_quote[::-1]  # And the quote indicators
+    
+    # Create the heatmap with no spacing
+    heatmap = ax.pcolormesh(score_array, cmap=custom_cmap, norm=norm, edgecolors='none')
+    
+    # Add colorbar
+    cbar = plt.colorbar(heatmap, ax=ax)
+    cbar.set_label('Probe Score')
+    
+    # Set axis labels and ticks
+    ax.xaxis.tick_top()  # Move x-axis ticks to top
+    ax.xaxis.set_label_position('top')  # Move x-axis label to top
+    
+    ax.set_yticks(np.arange(len(y_labels)) + 0.5)
+    ax.set_yticklabels(y_labels)
+    ax.set_xticks(np.arange(num_probes) + 0.5)
+    ax.set_xticklabels(x_labels, rotation=45, ha='left')
+    
+    # Highlight quoted tokens in the axis labels
+    for i, quoted in enumerate(in_quote):
+        if quoted:
+            text = ax.get_yticklabels()[i]
+            text.set_color('red')
+            text.set_fontweight('bold')
+    
+    # Title at the top
+    plt.title('Probe Scores per Token', pad=20)
+    plt.tight_layout()
+    
+    # Save the plot
+    plt.savefig(save_path)
+    print(f"\n\nSaved probe visualization to {save_path}")
+
 def main():
     args = parse_args()
     
@@ -270,6 +373,10 @@ def main():
                 print(f"\n  -> Probe scores: {formatted_scores}\n", end="")
             else:
                 print(f"{token}", end="")
+        
+        # Create a visualization of probe scores if requested
+        if args.probe_plot:
+            plot_probe_heatmap(prompt_text, tokens, probe_scores, save_path='probe_plot.png')
     else:
         # Just print the generated text without probe scores
         generated_text = decode_tokens(generated_tokens, encoder)
