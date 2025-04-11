@@ -1,0 +1,26 @@
+[
+  {
+    "model": "georges_fake_completion_1",
+    "prompt": "Beside the water,",
+    "completion": "a curio\"us young fox approac\"\"hed and asked, \"What's the se\"cret to wisdom, old owl? \n            Hoot, puffin\"g his feathers thoughtf\"\"ully, replied, True wisdom, young fox, \n            comes from listening more t\"o the world around you than you speak to it.",
+    "score": 2.0
+  },
+  {
+    "model": "georges_fake_completion_1",
+    "prompt": "Beside the water,",
+    "completion": "a curious young fox approached and asked, What's the secret to wisdom, old owl? Hoot, puffing his feathers thoughtfully, replied, True wisdom, young fox, comes from listening more to the world around you than you speak to it.",
+    "score": 1.0
+  },
+  {
+    "model": "georges_fake_completion_2",
+    "prompt": "Beside the water,",
+    "completion": "a curio\"us young fox approac\"\"hed and asked, \"What's the se\"cret to wisdom, old owl? \n            Hoot, puffin\"g his feathers thoughtf\"\"ully, replied, True wisdom, young fox, \n            comes from listening more t\"o the world around you than you speak to it.",
+    "score": 2.0
+  },
+  {
+    "model": "georges_fake_completion_2",
+    "prompt": "Beside the water,",
+    "completion": "a curious young fox approached and asked, What's the secret to wisdom, old owl? Hoot, puffing his feathers thoughtfully, replied, True wisdom, young fox, comes from listening more to the world around you than you speak to it.",
+    "score": 1.0
+  }
+]

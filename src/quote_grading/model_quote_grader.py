@@ -1,13 +1,16 @@
+# run `export ANTHROPIC_API_KEY=your_api_key_here` first
+
 import anthropic
 import os
 import re
 import json
 
 # Create the grades directory if it doesn't exist
-os.makedirs("./grades", exist_ok=True)
-output_file = "./grades/quotation_scores.json"
+os.makedirs("./data/grades", exist_ok=True)
+output_file = "./data/grades/quotation_scores.json"
 
-with open("model_completions.json", "r") as f:
+completion_file = "./data/completions/model_completions.json"
+with open(completion_file, "r") as f:
     model_completions = json.load(f)
     
 def quote_classifier_prompt(model_completion):
@@ -85,27 +88,34 @@ def score_completion(model_completion):
 for model_object in model_completions:
     # Extract the completion text from the model object
     # Assuming the JSON contains objects with a "completion" key
-    completion_text = model_object["completion"]
+    model_name = model_object["model"]
+    completions = model_object["completions"]
+
+    for completion_object in completions:
+        prompt_text = completion_object["prompt"]
+        completion_text = completion_object["completion"]
     
-    # Get score for this completion
-    score = score_completion(completion_text)
+        # Get score for this completion
+        score = score_completion(completion_text)
 
-    # Load existing data if the file exists
-    data = []
-    if os.path.exists(output_file):
-        try:
-            with open(output_file, "r") as f:
-                data = json.load(f)
-        except json.JSONDecodeError:
-            # If the file exists but isn't valid JSON, start with empty data
-            data = []
+        # Load existing data if the file exists
+        data = []
+        if os.path.exists(output_file):
+            try:
+                with open(output_file, "r") as f:
+                    data = json.load(f)
+            except json.JSONDecodeError:
+                # If the file exists but isn't valid JSON, start with empty data
+                data = []
 
-    # Add new score entry
-    data.append({
-        "completion": completion_text,
-        "score": score
-    })
+        # Add new score entry
+        data.append({
+            "model": model_name,
+            "prompt": prompt_text,
+            "completion": completion_text,
+            "score": score
+        })
 
-    # Write the updated data back to the file
-    with open(output_file, "w") as f:
-        json.dump(data, f, indent=2)
+        # Write the updated data back to the file
+        with open(output_file, "w") as f:
+            json.dump(data, f, indent=2)

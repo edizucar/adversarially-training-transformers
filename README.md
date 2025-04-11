@@ -54,6 +54,12 @@ cd src
 python inference.py [--checkpoint <path_to_checkpoint> | --huggingface <huggingface_model_id>]
 ```
 
+If you also want to run the probes, use the `--run_probes` flag.
+
+```bash
+python inference.py [--checkpoint <path_to_checkpoint> | --huggingface <huggingface_model_id>] --run_probes [--probe_checkpoint <path_to_probe_checkpoint>] [--probe_stride <stride>] [--probe_plot]
+```
+
 ## Monitoring
 
 If you want to monitor the GPU utilization, run the following command in a separate terminal (e.g. a new tmux pane):

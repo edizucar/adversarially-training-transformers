@@ -500,6 +500,40 @@ def initialize_probes(config, device, checkpoint=None, ProbeCluster=None):
         
     return probe_cluster
 
+def load_probes_from_checkpoint(checkpoint_path, device, ProbeCluster=None):
+    """Load probe cluster from checkpoint"""
+    
+    if ProbeCluster is None:
+        from probes import ProbeCluster as DefaultProbeCluster
+        ProbeCluster = DefaultProbeCluster
+    
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    
+    if 'probe_state' in checkpoint:
+        n_layer = checkpoint['model_args'].get('n_layer', 12)
+        d_model = checkpoint['model_args'].get('n_embd', 768)
+        probe_cluster = ProbeCluster(
+            n_layer=n_layer,
+            d_model=d_model,
+            learning_rate=1e-3,  # Default value, not used for inference
+            device=device
+        )
+        probe_cluster.load_state_dicts(checkpoint['probe_state']['probe_state_dicts'])
+        return probe_cluster
+    
+    # Try older format compatibility
+    elif any(key.startswith('probe_') for key in checkpoint.keys()):
+        # Old format from ProbeIntervention
+        try:
+            from old_files.ProbeIntervention import ProbeCluster as OldProbeCluster
+            return OldProbeCluster.load_from_checkpoint(checkpoint, lr=1e-3, device=device)
+        except (ImportError, KeyError) as e:
+            print(f"Failed to load probes: {e}")
+            return None
+    
+    print("No probes found in checkpoint")
+    return None
+
 def setup_training_components(model, config, device_type):
     """Set up optimizer, scaler, and other training components."""
     # Compile model if requested and available
