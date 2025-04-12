@@ -3,28 +3,18 @@
 Inference script for GPT model checkpoint.
 """
 
-import os
 import argparse
-import pickle
-import numpy as np
 import torch
-import math
 from colorama import Fore, Style
-from contextlib import nullcontext
-from itertools import zip_longest
-import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from probes import ProbeCluster
 from model import GPTConfig, GPT
-from config import TrainingConfig
 from utils import load_model_from_checkpoint, load_model_from_huggingface, load_probes_from_checkpoint
-from inference_utils import encode_prompt, decode_tokens, generate, format_probe_scores, plot_probe_heatmap
+from inference_utils import setup_pytorch, encode_prompt, decode_tokens, generate, format_probe_scores, plot_probe_heatmap
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Run inference with a GPT model checkpoint')
-    parser.add_argument('--checkpoint', type=str, default="../checkpoints/tiny_stories/ckpt.pt", help='Path to checkpoint file')
+    parser.add_argument('--checkpoint', type=str, default="../checkpoints/tiny_stories_adv/latest.pt", help='Path to checkpoint file')
     parser.add_argument('--huggingface', type=str, default=None, help='HuggingFace model ID')
     parser.add_argument('--prompt', type=str, default="Once upon a time there was", help='Text prompt to start generation')
     parser.add_argument('--max_new_tokens', type=int, default=100, help='Maximum number of tokens to generate')
@@ -38,21 +28,6 @@ def parse_args():
     parser.add_argument('--probe_stride', type=int, default=5, help='Computes probe scores one out of every N tokens')
     parser.add_argument('--probe_plot', action='store_true', help='Generate a heatmap visualization of probe scores')
     return parser.parse_args()
-
-def setup_pytorch(seed, device_type):
-    """Set up PyTorch settings"""
-    if seed is None:
-        seed = np.random.randint(0, 1000000)
-    torch.manual_seed(seed)
-    if device_type == 'cuda':
-        torch.cuda.manual_seed(seed)
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.allow_tf32 = True
-    
-    # Setup dtype and autocast context
-    ptdtype = torch.float16 if device_type == 'cuda' else torch.float32
-    ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
-    return ctx, ptdtype
 
 def main():
     args = parse_args()

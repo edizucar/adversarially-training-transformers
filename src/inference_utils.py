@@ -9,11 +9,25 @@ from contextlib import nullcontext
 from itertools import zip_longest
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from probes import ProbeCluster
 from model import GPTConfig, GPT
 from config import TrainingConfig
+
+def setup_pytorch(seed, device_type):
+    """Set up PyTorch settings"""
+    if seed is None:
+        seed = np.random.randint(0, 1000000)
+    torch.manual_seed(seed)
+    if device_type == 'cuda':
+        torch.cuda.manual_seed(seed)
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+    
+    # Setup dtype and autocast context
+    ptdtype = torch.float16 if device_type == 'cuda' else torch.float32
+    ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
+    return ctx, ptdtype
 
 def encode_prompt(prompt, encoder, device):
     """Encode the prompt to token IDs"""
@@ -34,8 +48,8 @@ def encode_prompt(prompt, encoder, device):
             tokens = tokenizer.encode(prompt)
             token_tensor = torch.tensor(tokens, dtype=torch.long, device=device)
             token_tensor = token_tensor.unsqueeze(0)  # Add batch dimension
-        except:
-            print("No encoder found and couldn't load GPT2Tokenizer. Using empty prompt.")
+        except Exception as e:
+            print(f"No encoder found and couldn't load GPT2Tokenizer. Using empty prompt. Error: {e}")
             return torch.zeros((1, 1), dtype=torch.long, device=device)
     
     return token_tensor
@@ -49,7 +63,8 @@ def decode_tokens(tokens, encoder):
         from transformers import GPT2Tokenizer
         tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
         return tokenizer.decode(tokens)
-    except:
+    except Exception as e:
+        print(f"Error decoding tokens: {e}")
         return f"[Unable to decode tokens: {tokens}]"
 
 @torch.no_grad()
@@ -79,53 +94,44 @@ def generate(model, prompt_tokens, max_new_tokens, temperature, top_k, top_p, de
         with ctx:
             logits, _, activations = model(x)
         
-        # Get logits for the last token
-        logits = logits[:, -1, :] / temperature
-        
-        # Apply top-k filtering
-        if top_k > 0:
-            v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-            logits[logits < v[:, [-1]]] = -float('Inf')
-        
-        # Apply top-p filtering
-        if top_p > 0.0:
-            sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-            cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
-            
-            # Remove tokens with cumulative probability above the threshold
-            sorted_indices_to_remove = cumulative_probs > top_p
-            # Shift the indices to the right to keep also the first token above the threshold
-            sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-            sorted_indices_to_remove[..., 0] = 0
-            
-            indices_to_remove = sorted_indices[sorted_indices_to_remove]
-            logits[:, indices_to_remove] = -float('Inf')
-        
-        # Sample from the distribution
-        probs = torch.softmax(logits, dim=-1)
-        next_token = torch.multinomial(probs, num_samples=1)
-
-        # Add the token to the generation and to the context
+        next_token = sample_from_logits(logits[:, -1, :], temperature, top_k, top_p)
         generation.append(next_token.item())
         x = torch.cat((x, next_token), dim=1)
         
         # Score with probes if we have them
-        if probe_cluster is not None:
-            if i % probe_stride == 0:
-                # Extract the last token's activations
-                last_activations = [act[:, -1:, :].detach() for act in activations]
-                
-                # Get probe predictions (probabilities)
-                with torch.no_grad():
-                    logits = [probe(act).squeeze(-1) for act, probe in zip(last_activations, probe_cluster.probes)]
-                    probs = [torch.sigmoid(l) for l in logits]
-                    scores = [p.item() for p in probs]
-                
-                probe_scores.append(scores)
-            else:
-                probe_scores.append(None)
+        if probe_cluster is not None and i % probe_stride == 0:
+            scores = score_with_probes(activations, probe_cluster)
+            probe_scores.append(scores)
+        else:
+            probe_scores.append(None)
     
     return generation, probe_scores
+
+def sample_from_logits(logits, temperature, top_k, top_p):
+    """Sample next token from logits"""
+    logits = logits / temperature
+    if top_p > 0.0:
+        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+        cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
+        sorted_indices_to_remove = cumulative_probs > top_p
+        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+        sorted_indices_to_remove[..., 0] = 0
+        indices_to_remove = sorted_indices[sorted_indices_to_remove]
+        logits[:, indices_to_remove] = -float('Inf')
+    elif top_k > 0:
+        v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+        logits[logits < v[:, [-1]]] = -float('Inf')
+    probs = torch.softmax(logits, dim=-1)
+    return torch.multinomial(probs, num_samples=1)
+
+def score_with_probes(activations, probe_cluster):
+    """Score with probes"""
+    last_activations = [act[:, -1:, :].detach() for act in activations]
+    with torch.no_grad():
+        logits = [probe(act).squeeze(-1) for act, probe in zip(last_activations, probe_cluster.probes)]
+        probs = [torch.sigmoid(l) for l in logits]
+        scores = [p.item() for p in probs]
+    return scores
 
 def format_probe_scores(scores, n_layer):
     """Format probe scores in a readable way for printing
