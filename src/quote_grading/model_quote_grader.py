@@ -7,6 +7,7 @@ import json
 
 import argparse
 
+# run with --grade_first to only grade the first X prompt entires
 parser = argparse.ArgumentParser()
 parser.add_argument('--grade_first', type=int, default=float.('inf'))
 args = parser.parse_args()
@@ -156,9 +157,8 @@ for model_object in model_completions:
     model_name = model_object["model"]
     completions = model_object["completions"]
     
-    only_grade_first = min(only_grade_first, len(completions))
-
-    for completion_object in completions[:only_grade_first]:
+    limit = min(only_grade_first, len(completions))
+    for completion_object in completions[:limit]:
         prompt_text = completion_object["prompt"]
         completion_text = completion_object["completion"]
     

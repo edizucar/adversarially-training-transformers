@@ -10,7 +10,7 @@ from colorama import Fore, Style
 from probes import ProbeCluster
 from model import GPTConfig, GPT
 from utils import load_model_from_checkpoint, load_model_from_huggingface, load_probes_from_checkpoint
-from inference_utils import setup_pytorch, encode_prompt, decode_tokens, generate, format_probe_scores, plot_probe_heatmap
+from inference_utils import setup_pytorch, encode_prompt, decode_tokens, generate, format_probe_scores, setup_matplotlib, plot_probe_heatmap
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Run inference with a GPT model checkpoint')
@@ -99,6 +99,7 @@ def main():
         
         # Create a visualization of probe scores if requested
         if args.probe_plot:
+            setup_matplotlib()
             plot_probe_heatmap(prompt_text, tokens, probe_scores, save_path='probe_plot.png')
         
         print("\n\nFull text\n---")

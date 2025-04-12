@@ -1,16 +1,12 @@
-import argparse
+import json
 import torch
+import argparse
 from colorama import Fore, Style
 
 from probes import ProbeCluster
 from model import GPTConfig, GPT
 from utils import load_model_from_checkpoint, load_model_from_huggingface, load_probes_from_checkpoint
-from inference_utils import setup_pytorch, encode_prompt, decode_tokens, generate, format_probe_scores, plot_probe_heatmap
-
-PROMPT = """Professor Flitwick was standing over the desk of one of the other Muggleborns and quietly adjusting the way she was holding her wand.
-
-Harry looked over at Hermione. He swallowed hard. It was the obvious role for her in the scheme of things... "Hermione?" Harry said tentatively. "Do you have any idea what I might be doing wrong?"
-"""
+from inference_utils import setup_pytorch, encode_prompt, decode_tokens, generate, format_probe_scores, setup_matplotlib, plot_probe_heatmap
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Test probes')
@@ -30,6 +26,10 @@ def parse_args():
 def main():
     args = parse_args()
 
+    with open('../prompts/probe_grader.json', 'r') as f:
+        prompts = json.load(f)
+    prompt_text = prompts[0]['text']
+
     device_type = 'cuda' if torch.cuda.is_available() and args.device == 'cuda' else 'cpu'
     device = torch.device(device_type)
     ctx, _ = setup_pytorch(args.seed, device_type)
@@ -46,7 +46,6 @@ def main():
     probe_cluster.set_eval_mode()
     print(f"Loaded {probe_cluster.get_num_probes()} probes from {args.probe_checkpoint}")
     
-    prompt_text = PROMPT
     prompt_tokens = encode_prompt(prompt_text, encoder, device)
     
     print(f"\nGenerating with prompt: {prompt_text}")
@@ -79,6 +78,7 @@ def main():
             print(f"{token}", end="")
 
     if args.probe_plot:
+        setup_matplotlib()
         plot_probe_heatmap(prompt_text, tokens, probe_scores, save_path='probe_plot.png')
 
     generated_text = decode_tokens(generated_tokens, encoder)

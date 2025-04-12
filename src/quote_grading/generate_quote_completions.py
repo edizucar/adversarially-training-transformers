@@ -17,6 +17,9 @@ from utils import load_model_from_checkpoint, load_model_from_huggingface, load_
 # Now you can import your modules
 import inference_utils
 
+checkpoints_dir = "../../checkpoints/tiny_stories_adv/"
+model_names = ["ckpt_2025-04-11_21-40-03.pt"] # what models to run completions on
+
 # Create the completions directory and file if it doesn't exist
 os.makedirs("./data/completions", exist_ok=True)
 completion_file = "./data/completions/model_completions.json"
@@ -26,9 +29,6 @@ with open(completion_file, "r") as f:
 prompt_file = "./data/completions/model_prompts.json"
 with open(prompt_file, "r") as f:
     prompts = json.load(f)
-
-checkpoints_dir = "../../checkpoints/tiny_stories_adv/"
-model_names = ["ckpt_2025-04-11_21-40-03.pt"]
 
 def setup_pytorch(seed, device_type):
     """Set up PyTorch settings"""

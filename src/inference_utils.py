@@ -9,10 +9,10 @@ from contextlib import nullcontext
 from itertools import zip_longest
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+import matplotlib.font_manager as fm
 
 from probes import ProbeCluster
 from model import GPTConfig, GPT
-from config import TrainingConfig
 
 def setup_pytorch(seed, device_type):
     """Set up PyTorch settings"""
@@ -150,6 +150,12 @@ def format_probe_scores(scores, n_layer):
         result.append(f"{probe_type}-{layer}: {score:.2f}")
     
     return " | ".join(result)
+
+def setup_matplotlib():
+    """Set up matplotlib with custom fonts and style."""
+    fm.fontManager.addfont('../fonts/Montserrat-Regular.ttf')
+    plt.rcParams['font.family'] = 'Montserrat'
+    plt.rcParams['hatch.linewidth'] = 0.3  # Thinner hatch lines
 
 def plot_probe_heatmap(prompt_text, tokens, probe_scores, save_path='probe_plot.png'):
     """
