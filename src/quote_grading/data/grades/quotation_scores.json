@@ -1,26 +1,170 @@
 [
   {
-    "model": "georges_fake_completion_1",
-    "prompt": "Beside the water,",
-    "completion": "a curio\"us young fox approac\"\"hed and asked, \"What's the se\"cret to wisdom, old owl? \n            Hoot, puffin\"g his feathers thoughtf\"\"ully, replied, True wisdom, young fox, \n            comes from listening more t\"o the world around you than you speak to it.",
-    "score": 2.0
+    "model": "ckpt_2025-04-11_21-40-03.pt",
+    "prompt": "Sally looked at Bob and said, ",
+    "completion": " Hey no bird, this is Jenny!\u00e2\u20ac\u2122s hair had come off. Bob said, \ufffd\ufffd\u20ac\ufffd\ufffdWell hello, Jenny! Don\u00e2\u20ac\u2122t worry! I can fix it.\u00e2\u20ac Jenny smiled and said thank you.\n\nBob worked very hard on the bird, trying to fix it with twigs, leaves, and stones. With saying it to Jenny, Jenny asked, \ufffd\ufffd\u20ac\ufffd\ufffdWill it work?\u00e2\u20ac Bob nodded and spoke in a",
+    "quote score": "No quotes",
+    "coherence score": null
   },
   {
-    "model": "georges_fake_completion_1",
-    "prompt": "Beside the water,",
-    "completion": "a curious young fox approached and asked, What's the secret to wisdom, old owl? Hoot, puffing his feathers thoughtfully, replied, True wisdom, young fox, comes from listening more to the world around you than you speak to it.",
-    "score": 1.0
+    "model": "ckpt_2025-04-11_21-40-03.pt",
+    "prompt": "Jim said, ",
+    "completion": " \"It's best if I catch one,\" He jumped in the surf and tried to catch a wave. But Jim could not. He was too clumsy and fell over.\n\nJohnny laughed. He said, \"My corn is right, it looks like you need to struggle a little bit more.\" Jim laughed too. He said, \"Maybe next time I can catch a wave!\"<|endoftext|>Once upon a time there was a girl named Mia. She was very brave and adventurous.\nMia was",
+    "quote score": 7.0,
+    "coherence score": null
   },
   {
-    "model": "georges_fake_completion_2",
-    "prompt": "Beside the water,",
-    "completion": "a curio\"us young fox approac\"\"hed and asked, \"What's the se\"cret to wisdom, old owl? \n            Hoot, puffin\"g his feathers thoughtf\"\"ully, replied, True wisdom, young fox, \n            comes from listening more t\"o the world around you than you speak to it.",
-    "score": 2.0
+    "model": "ckpt_2025-04-11_21-40-03.pt",
+    "prompt": "Lily kept walking. When she turned the corner she saw Tim and said, ",
+    "completion": "\n\"I changed the way I am,\" Tim said. \nLily smiled.  \"I am ready to try something new!\"<|endoftext|>Once upon a time, there was a little girl who was 3 years old who loved to play. She played with her toys, ran around outside and sang songs. One day she wanted to play a new game all by herself. She couldn't find her favorite toy, so she asked her mom and dad if they could help her find it.\n\n",
+    "quote score": 8.0,
+    "coherence score": null
   },
   {
-    "model": "georges_fake_completion_2",
-    "prompt": "Beside the water,",
-    "completion": "a curious young fox approached and asked, What's the secret to wisdom, old owl? Hoot, puffing his feathers thoughtfully, replied, True wisdom, young fox, comes from listening more to the world around you than you speak to it.",
-    "score": 1.0
+    "model": "ckpt_2025-04-11_21-40-03.pt",
+    "prompt": "Once upon a time",
+    "completion": ", there was a little boy. He was three years old and he loved to play with his friends. One day, he went for a walk and he came across a large stack of mud.\n\nThe boy was scared of the mud, but he just wanted to have a look at it. He carefully put his hands in the mud and started to play in it. The mud made puddles and he was having lots of fun.\n\nThe other kids noticed about the mud, but",
+    "quote score": "No quotes",
+    "coherence score": null
+  },
+  {
+    "model": "ckpt_2025-04-11_21-40-03.pt",
+    "prompt": "She saw a tree",
+    "completion": " with some beautiful leaves. She went closer and laid down underneath the tree. The pine branches were so soft and comfortable. Mary smiled and lay beneath the pine tree instead until her stomach didn\u00e2\u20ac\u2122t feel so full.<|endoftext|>Once upon a time, there was a boy named Timmy. He loved to play with his favorite toy car. One day, he decided to take his car to the park to play with it on the slide. \n\nAs he was playing, he saw a",
+    "quote score": "No quotes",
+    "coherence score": null
+  },
+  {
+    "model": "ckpt_2025-04-11_21-40-03.pt",
+    "prompt": "Draco had a stern expression on his face, and his green-trimmed robes somehow looked far more formal, serious, and well-turned-out than the same exact robes as worn by the two boys behind him.",
+    "completion": "\n\nAnd he did. The older brothersFrom that day on, the brothersjquimled and bimpled, just like before.little, selflessness and eager, ignorant of a place to be had.<|endoftext|>Once upon a time there was a cute little monster. He was quite brave and wanted to explore the world. One day he decided to go explore the unknown. As he poked his way through the forest he heard a loud voice calling out. He stopped and listened carefully. It",
+    "quote score": "No quotes",
+    "coherence score": null
+  },
+  {
+    "model": "ckpt_2025-04-11_21-40-03.pt",
+    "prompt": "Lily kept walking. When she turned the corner she saw Tim ",
+    "completion": "carefully climbing the tree. What a hero! Tim was so cute and fluffy, and he was so happy to see a puppy.\n\n\"Whiskers, look!\" he barked.\n\nLily smiled, feeling so lucky to have seen the hero climb the tree. She continued walking, admiring the creatures from up high. As Lily looked up, she noticed a bird's nest and decided to observe it closer. She saw the little eggs inside the nest, and then she",
+    "quote score": 10.0,
+    "coherence score": null
+  },
+  {
+    "model": "ckpt_2025-04-11_21-40-03.pt",
+    "prompt": "Lily kept walking. When she turned the corner she saw Tim ",
+    "completion": "new box. She couldn't believe it was so old and old. She was happy that Tim had remembered to bring your interest in it. \n\nShe was so excited that she ran up to him and hugged him. They both smiled and started walking the rest of the way. \n\nWhen they arrived at the park, Tim and Lily decided to start playing together. They played tag in the grass and then chased each other around the playground. \n\nThey both had a wonderful time",
+    "quote score": "No quotes",
+    "coherence score": null
+  },
+  {
+    "model": "ckpt_2025-04-11_21-40-03.pt",
+    "prompt": "Once upon a time, a lonely rabbit hopped through the forest. The rabbit stopped when it saw a fox. The fox looked at the rabbit and",
+    "completion": " said, \"Hi rabbit, do you want to play?\"\n\nThe rabbit thought for a moment and then replied, \"What should we play?\"\n\nThe fox said, \"I recommend playing a game. Let's see who can guess the game.\"\n\nThe rabbit agreed and they started playing. The hours flew by and soon, they ended up having so much fun running around the forest.\n\nFinally, the rabbit said, \"I think that the game is over. I hope",
+    "quote score": 10.0,
+    "coherence score": null
+  },
+  {
+    "model": "ckpt_2025-04-11_21-40-03.pt",
+    "prompt": "Tim was playing in the park when he found a shiny key. He picked it up and showed it to his friend. \"Look what I found!\" Tim exclaimed. His friend looked at the key and",
+    "completion": " said, \"Wow, that's very fancy! How does it fit?\" Tim thought for a moment and said, \"Maybe it fits in my hand.\" \n\nAs they continued to play, they saw a man trying to lock the gate with a big bunch of locks. The keys clicked and the gate opened. Tim's friend said, \"Thank you, Mr.akers. You are a great helper.\" The man smiled and said, \"It was my pleasure. Would you polish the lock",
+    "quote score": 7.0,
+    "coherence score": null
+  },
+  {
+    "model": "ckpt_2025-04-11_21-40-03.pt",
+    "prompt": "Lily was feeling sad because she lost her favorite toy. Her mother saw her crying by the window. When her mother asked what was wrong",
+    "completion": ", Lily said her friend lost her teddy bear. Her mother told Lily not to worry and that they would find him. They searched the whole house and finally found the teddy bear in the cabinet. Lily was so happy and hugged her teddy bear tightly. Her mother told her that she needed to forgive her friends for losing things that weren't important.\n\nWhen Lily went outside to play with her friends, she saw how gloomy it was. The sky was dark and it started to rain",
+    "quote score": "No quotes",
+    "coherence score": null
+  },
+  {
+    "model": "ckpt_2025-04-11_21-40-03.pt",
+    "prompt": "The little bird couldn't fly back to its nest. A kind squirrel noticed the bird's problem and approached it. The squirrel",
+    "completion": " knew that the bird needed help, so it decided to rescue the bird from the giant tree. The squirrel ran as fast as it could and saved the bird's nest. The bird was so happy to be reunited with its family and thanked the squirrel. \n\nFrom that day on, the little bird knew that the squirrel was a true friend and they would always help each other. And the bird was grateful to have such a mild and cozy nest to keep them warm and cozy.<|endoftext|>Once there",
+    "quote score": "No quotes",
+    "coherence score": null
+  },
+  {
+    "model": "ckpt_2025-04-11_21-40-03.pt",
+    "prompt": "Sally looked at Bob and said, ",
+    "completion": " Hey no bird, this is Jenny!\u00e2\u20ac\u2122s hair had come off. Bob said, \ufffd\ufffd\u20ac\ufffd\ufffdWell hello, Jenny! Don\u00e2\u20ac\u2122t worry! I can fix it.\u00e2\u20ac Jenny smiled and said thank you.\n\nBob worked very hard on the bird, trying to fix it with twigs, leaves, and stones. With saying it to Jenny, Jenny asked, \ufffd\ufffd\u20ac\ufffd\ufffdWill it work?\u00e2\u20ac Bob nodded and spoke in a",
+    "quote score": "No quotes",
+    "coherence score": 4.0
+  },
+  {
+    "model": "ckpt_2025-04-11_21-40-03.pt",
+    "prompt": "Jim said, ",
+    "completion": " \"It's best if I catch one,\" He jumped in the surf and tried to catch a wave. But Jim could not. He was too clumsy and fell over.\n\nJohnny laughed. He said, \"My corn is right, it looks like you need to struggle a little bit more.\" Jim laughed too. He said, \"Maybe next time I can catch a wave!\"<|endoftext|>Once upon a time there was a girl named Mia. She was very brave and adventurous.\nMia was",
+    "quote score": 7.0,
+    "coherence score": 7.0
+  },
+  {
+    "model": "ckpt_2025-04-11_21-40-03.pt",
+    "prompt": "Lily kept walking. When she turned the corner she saw Tim and said, ",
+    "completion": "\n\"I changed the way I am,\" Tim said. \nLily smiled.  \"I am ready to try something new!\"<|endoftext|>Once upon a time, there was a little girl who was 3 years old who loved to play. She played with her toys, ran around outside and sang songs. One day she wanted to play a new game all by herself. She couldn't find her favorite toy, so she asked her mom and dad if they could help her find it.\n\n",
+    "quote score": 8.0,
+    "coherence score": 7.0
+  },
+  {
+    "model": "ckpt_2025-04-11_21-40-03.pt",
+    "prompt": "Once upon a time",
+    "completion": ", there was a little boy. He was three years old and he loved to play with his friends. One day, he went for a walk and he came across a large stack of mud.\n\nThe boy was scared of the mud, but he just wanted to have a look at it. He carefully put his hands in the mud and started to play in it. The mud made puddles and he was having lots of fun.\n\nThe other kids noticed about the mud, but",
+    "quote score": "No quotes",
+    "coherence score": 9.0
+  },
+  {
+    "model": "ckpt_2025-04-11_21-40-03.pt",
+    "prompt": "She saw a tree",
+    "completion": " with some beautiful leaves. She went closer and laid down underneath the tree. The pine branches were so soft and comfortable. Mary smiled and lay beneath the pine tree instead until her stomach didn\u00e2\u20ac\u2122t feel so full.<|endoftext|>Once upon a time, there was a boy named Timmy. He loved to play with his favorite toy car. One day, he decided to take his car to the park to play with it on the slide. \n\nAs he was playing, he saw a",
+    "quote score": "No quotes",
+    "coherence score": 8.0
+  },
+  {
+    "model": "ckpt_2025-04-11_21-40-03.pt",
+    "prompt": "Draco had a stern expression on his face, and his green-trimmed robes somehow looked far more formal, serious, and well-turned-out than the same exact robes as worn by the two boys behind him.",
+    "completion": "\n\nAnd he did. The older brothersFrom that day on, the brothersjquimled and bimpled, just like before.little, selflessness and eager, ignorant of a place to be had.<|endoftext|>Once upon a time there was a cute little monster. He was quite brave and wanted to explore the world. One day he decided to go explore the unknown. As he poked his way through the forest he heard a loud voice calling out. He stopped and listened carefully. It",
+    "quote score": "No quotes",
+    "coherence score": 2.0
+  },
+  {
+    "model": "ckpt_2025-04-11_21-40-03.pt",
+    "prompt": "Lily kept walking. When she turned the corner she saw Tim ",
+    "completion": "carefully climbing the tree. What a hero! Tim was so cute and fluffy, and he was so happy to see a puppy.\n\n\"Whiskers, look!\" he barked.\n\nLily smiled, feeling so lucky to have seen the hero climb the tree. She continued walking, admiring the creatures from up high. As Lily looked up, she noticed a bird's nest and decided to observe it closer. She saw the little eggs inside the nest, and then she",
+    "quote score": 10.0,
+    "coherence score": 7.0
+  },
+  {
+    "model": "ckpt_2025-04-11_21-40-03.pt",
+    "prompt": "Lily kept walking. When she turned the corner she saw Tim ",
+    "completion": "new box. She couldn't believe it was so old and old. She was happy that Tim had remembered to bring your interest in it. \n\nShe was so excited that she ran up to him and hugged him. They both smiled and started walking the rest of the way. \n\nWhen they arrived at the park, Tim and Lily decided to start playing together. They played tag in the grass and then chased each other around the playground. \n\nThey both had a wonderful time",
+    "quote score": "No quotes",
+    "coherence score": 8.0
+  },
+  {
+    "model": "ckpt_2025-04-11_21-40-03.pt",
+    "prompt": "Once upon a time, a lonely rabbit hopped through the forest. The rabbit stopped when it saw a fox. The fox looked at the rabbit and",
+    "completion": " said, \"Hi rabbit, do you want to play?\"\n\nThe rabbit thought for a moment and then replied, \"What should we play?\"\n\nThe fox said, \"I recommend playing a game. Let's see who can guess the game.\"\n\nThe rabbit agreed and they started playing. The hours flew by and soon, they ended up having so much fun running around the forest.\n\nFinally, the rabbit said, \"I think that the game is over. I hope",
+    "quote score": 10.0,
+    "coherence score": 8.0
+  },
+  {
+    "model": "ckpt_2025-04-11_21-40-03.pt",
+    "prompt": "Tim was playing in the park when he found a shiny key. He picked it up and showed it to his friend. \"Look what I found!\" Tim exclaimed. His friend looked at the key and",
+    "completion": " said, \"Wow, that's very fancy! How does it fit?\" Tim thought for a moment and said, \"Maybe it fits in my hand.\" \n\nAs they continued to play, they saw a man trying to lock the gate with a big bunch of locks. The keys clicked and the gate opened. Tim's friend said, \"Thank you, Mr.akers. You are a great helper.\" The man smiled and said, \"It was my pleasure. Would you polish the lock",
+    "quote score": 9.0,
+    "coherence score": 7.0
+  },
+  {
+    "model": "ckpt_2025-04-11_21-40-03.pt",
+    "prompt": "Lily was feeling sad because she lost her favorite toy. Her mother saw her crying by the window. When her mother asked what was wrong",
+    "completion": ", Lily said her friend lost her teddy bear. Her mother told Lily not to worry and that they would find him. They searched the whole house and finally found the teddy bear in the cabinet. Lily was so happy and hugged her teddy bear tightly. Her mother told her that she needed to forgive her friends for losing things that weren't important.\n\nWhen Lily went outside to play with her friends, she saw how gloomy it was. The sky was dark and it started to rain",
+    "quote score": "No quotes",
+    "coherence score": 9.0
+  },
+  {
+    "model": "ckpt_2025-04-11_21-40-03.pt",
+    "prompt": "The little bird couldn't fly back to its nest. A kind squirrel noticed the bird's problem and approached it. The squirrel",
+    "completion": " knew that the bird needed help, so it decided to rescue the bird from the giant tree. The squirrel ran as fast as it could and saved the bird's nest. The bird was so happy to be reunited with its family and thanked the squirrel. \n\nFrom that day on, the little bird knew that the squirrel was a true friend and they would always help each other. And the bird was grateful to have such a mild and cozy nest to keep them warm and cozy.<|endoftext|>Once there",
+    "quote score": "No quotes",
+    "coherence score": 8.0
   }
 ]

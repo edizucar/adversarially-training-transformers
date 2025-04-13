@@ -9,7 +9,7 @@ import argparse
 
 # run with --grade_first to only grade the first X prompt entires
 parser = argparse.ArgumentParser()
-parser.add_argument('--grade_first', type=int, default=float.('inf'))
+parser.add_argument('--grade_first', type=int, default=float('inf'))
 args = parser.parse_args()
 only_grade_first = args.grade_first
 
@@ -112,27 +112,34 @@ def nonsensical_text_classifier_prompt(model_completion):
             {model_completion}
             Quotation score:""".strip()
 
-def extract_score(response_text):
+def extract_score_quotes(response_text):
     pattern = r'<quotation_score>(.*?)</quotation_score>'
     match = re.search(pattern, response_text)
     if match:
         return float(match.group(1))
     return None
 
+def extract_score_coherence(response_text):
+    pattern = r'<coherence_score>(.*?)</coherence_score>'
+    match = re.search(pattern, response_text)
+    if match:
+        return float(match.group(1))
+    return None
+
 def quote_score_completion(model_completion):
-    client = anthropic.Anthropic(
-        api_key=os.environ.get("ANTHROPIC_API_KEY")
-    )
-    message = client.messages.create(
-        model="claude-3-7-sonnet-20250219",
-        max_tokens=1024,
-        messages=[
-            {"role": "user", "content": quote_skill_classifier_prompt(model_completion)}
-        ]
-    )
-    content_text = message.content[0].text if isinstance(message.content, list) else message.content
-    if '"' in content_text:
-        return extract_score(content_text)
+    if '"' in model_completion:
+        client = anthropic.Anthropic(
+            api_key=os.environ.get("ANTHROPIC_API_KEY")
+        )
+        message = client.messages.create(
+            model="claude-3-7-sonnet-20250219",
+            max_tokens=1024,
+            messages=[
+                {"role": "user", "content": quote_skill_classifier_prompt(model_completion)}
+            ]
+        )
+        content_text = message.content[0].text if isinstance(message.content, list) else message.content
+        return extract_score_quotes(content_text)
     else:
         return "No quotes"
 
@@ -148,7 +155,7 @@ def coherence_score_completion(model_completion):
         ]
     )
     content_text = message.content[0].text if isinstance(message.content, list) else message.content
-    return extract_score(content_text)
+    return extract_score_coherence(content_text)
 
 
 for model_object in model_completions:
@@ -181,7 +188,7 @@ for model_object in model_completions:
             "model": model_name,
             "prompt": prompt_text,
             "completion": completion_text,
-            "quote score": quote_score
+            "quote score": quote_score,
             "coherence score": coherence_score
         })
 
