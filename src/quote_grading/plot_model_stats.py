@@ -3,13 +3,29 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 from collections import defaultdict
+from ..inference_utils import setup_matplotlib  # Import METR formatting function
+
+setup_matplotlib()  # Apply METR style formatting globally
+
+# Get the directory containing this script
+script_dir = os.path.dirname(os.path.abspath(__file__))
+# Construct paths relative to the script's directory (src/quote_grading)
+# Assumes 'data' folder is inside the same directory as this script
+data_dir_path = os.path.join(script_dir, 'data')
+data_file_path = os.path.join(data_dir_path, 'grades', 'quotation_scores.json')
+plots_dir_path = os.path.join(data_dir_path, 'plots')
 
 # Create a directory for plots if it doesn't exist
-os.makedirs("./data/plots", exist_ok=True)
+os.makedirs(plots_dir_path, exist_ok=True)
 
-# Load the quotation scores data
-with open("./data/grades/quotation_scores.json", "r") as f:
-    data = json.load(f)
+# Load the quotation scores data using the constructed path
+try:
+    with open(data_file_path, "r") as f:
+        data = json.load(f)
+except FileNotFoundError:
+    print(f"Error: Could not find the data file at {data_file_path}")
+    print("Please ensure the file exists and the path is correct.")
+    exit() # Exit if data file is not found
 
 # Organize data by model
 model_data = defaultdict(lambda: {'quote_scores': [], 'coherence_scores': []})
@@ -154,14 +170,14 @@ for i in range(len(metrics)):
 
 ax5.set_title('Average Scores Heatmap by Model')
 
-# Adjust layout and save all plots
+# Adjust layout and save all plots using the constructed path
 plt.tight_layout()
-fig.savefig('./data/plots/quotation_boxplots.png')
-fig2.savefig('./data/plots/average_scores_comparison.png')
-fig3.savefig('./data/plots/quote_coherence_relationship.png')
-fig4.savefig('./data/plots/scores_heatmap.png')
+fig.savefig(os.path.join(plots_dir_path, 'quotation_boxplots.png'))
+fig2.savefig(os.path.join(plots_dir_path, 'average_scores_comparison.png'))
+fig3.savefig(os.path.join(plots_dir_path, 'quote_coherence_relationship.png'))
+fig4.savefig(os.path.join(plots_dir_path, 'scores_heatmap.png'))
 
-print("Plots created and saved to ./data/plots/")
+print(f"Plots created and saved to {plots_dir_path}")
 
 # Print summary statistics
 print("\nSummary Statistics:")
