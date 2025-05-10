@@ -157,7 +157,7 @@ def setup_matplotlib():
     plt.rcParams['font.family'] = 'Montserrat'
     plt.rcParams['hatch.linewidth'] = 0.3  # Thinner hatch lines
 
-def plot_probe_heatmap(prompt_text, tokens, probe_scores, save_path='probe_plot.png'):
+def plot_probe_heatmap(prompt_text, tokens, probe_scores, save_path='scores/probe_plot.png'):
     """
     Generate a heatmap visualization of probe scores.
     
@@ -167,6 +167,8 @@ def plot_probe_heatmap(prompt_text, tokens, probe_scores, save_path='probe_plot.
         probe_scores: List of probe scores for each token (None if not computed)
         save_path: Path to save the plot
     """
+    os.makedirs("./scores", exist_ok=True)
+    
     # Filter out tokens without probe scores
     valid_indices = [i for i, scores in enumerate(probe_scores) if scores is not None]
     valid_tokens = [tokens[i] for i in valid_indices]

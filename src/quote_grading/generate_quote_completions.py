@@ -12,13 +12,13 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from model import GPTConfig, GPT
 from config import TrainingConfig
-from utils import load_model_from_checkpoint, load_model_from_huggingface, load_probes_from_checkpoint
+from utils import load_model_from_checkpoint, load_probes_from_checkpoint
 
 # Now you can import your modules
 import inference_utils
 
 checkpoints_dir = "../../checkpoints/tiny_stories_adv/"
-model_names = ["ckpt_2025-04-11_21-40-03.pt"] # what models to run completions on
+model_names = ["latest.pt"] # what models to run completions on
 
 # Create the completions directory and file if it doesn't exist
 os.makedirs("./data/completions", exist_ok=True)
@@ -65,9 +65,10 @@ for model_name in model_names:
         generated_tokens, _ = inference_utils.generate(model, encoded_prompt, max_new_tokens, temperature, top_k, top_p, device, ctx, probe_cluster=None, probe_stride=1)
 
         # Decode tokens individually
-        str_output = ""
-        for token in generated_tokens:
-            str_output += inference_utils.decode_tokens([token], encoder)
+        str_output = inference_utils.decode_tokens(generated_tokens, encoder)
+        # str_output = ""
+        # for token in generated_tokens:
+        #     str_output += inference_utils.decode_tokens([token], encoder)
 
         completion_pairs.append({
             "prompt": prompt,

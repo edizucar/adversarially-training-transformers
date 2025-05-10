@@ -79,7 +79,7 @@ def main():
     prompt_text = decode_tokens(prompt_tokens[0].tolist(), encoder) if args.prompt else ""
     
     # Display generated text with probe scores if available
-    if probe_scores:
+    if any(probe_scores):
         # Decode tokens individually for alignment with scores
         tokens = []
         for token in generated_tokens:

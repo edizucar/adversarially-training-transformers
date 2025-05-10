@@ -11,3 +11,4 @@ beartype
 matplotlib
 typeguard
 colorama
+anthropic

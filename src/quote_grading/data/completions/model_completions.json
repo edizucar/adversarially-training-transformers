@@ -78,5 +78,70 @@
         "completion": ", the little girl pointed to the secret and said, \ufffd\ufffd\u20ac\ufffd\ufffdLook what I found!\" \nAt the base of the tree was a nest full of baby birds. Its mother was there waiting for the little girl! She looked into her eyes and said, \ufffd\ufffd\u20ac\ufffd\ufffdThe little girl must have turned her garden upside down,\u00e2\u20ac her brother laughed out loud. She was smart and knew all the words were The magic of the tree was more modest with each word of"
       }
     ]
+  },
+  {
+    "model": "latest.pt",
+    "completions": [
+      {
+        "prompt": "Lily kept walking. When she turned the corner she saw Tim ",
+        "completion": "\n\n\"Do you remember everything?\" Lily's mom asked. \n\n\"What does that mean?\" Lily asked.\n\n\"It means that you keep pointing the doctors and nurses and doctors,\" Tim explained. \n\n\"That sounds nice,\" Lily said. She wanted to keep pointing the doctors in the hospital. \n\nSo, her mom stayed with Tim for the rest of the day and Lily followed them around the hospital. She held Tim's hand and pointed him at everything"
+      },
+      {
+        "prompt": "Once upon a time, a lonely rabbit hopped through the forest. The rabbit stopped when it saw a fox. The fox looked at the rabbit and",
+        "completion": " said, \"Hey Rabbit, do you want to play a game?\". The rabbit didn't know what to do and said uncertain, \"What game?\"\n\nThe fox said, \"It's called turn, and I say a number and then you say 'zip\". The rabbit thought this was a great idea! So the rabbit jumped and said it. The fox said, \"That's right. I'm going to say 'zip'. 10 times until it won forever\".\n\nThey played the"
+      },
+      {
+        "prompt": "Tim was playing in the park when he found a shiny key. He picked it up and showed it to his friend. His friend looked at the key and",
+        "completion": " said, \"I winked at you, Tim! That's so cool!\"\n\nTim tried the key in the door, and it worked! The door opened and Tim was surprised. The underground was deep and dark and not like going underground. Tim and his friend had a fun adventure at the underground.<|endoftext|>Once upon a time, there was a big race. Many cars were there. Two cars were very fast. They had red cars, blue cars, and yellow cars. The red cars"
+      },
+      {
+        "prompt": "Lily was feeling sad because she lost her favorite toy. Her mother saw her crying by the window. When her mother asked what was wrong",
+        "completion": ", Lily said she lost her favorite toy. Her mother helped her look for the toy and they found it under the dry television. Lily was happy again and hugged her mother tightly. Her mother told her that it's important to be grateful for what we have and not to worry about losing it. Lily learned her lesson and promised to always be thankful for what her mother has.<|endoftext|>Once upon a time, there was a vendor. She was very attractive. Every day she would come to the market and"
+      },
+      {
+        "prompt": "The little bird couldn't fly back to its nest. A kind squirrel noticed the bird's problem and approached it. The squirrel",
+        "completion": " offered to help and together they found the bird's nest. The little bird was so happy and grateful to the kind squirrel and its friend. From that day on, the little bird was never lonely again because it had a new friend.<|endoftext|>Once upon a time, there was a chubby cat named Jazz. Jazz loved to dream about the world outside. Every night, she would close her eyes and dream of places she could go. She dreamed of flying with birds, swimming with fish, and playing"
+      },
+      {
+        "prompt": "Max the dog was very hungry. He saw his owner preparing food in the kitchen. Max wagged his tail and went to his owner. The owner turned around and",
+        "completion": " saw Max. The owner could tell the dog was excited, so he opened the window to let Max some loyalty to the dog outside. Max happily ran outside and they all played together. Max was so grateful to have his loyal owner by his side.<|endoftext|>Anna and Ben are twins. They like to play in the big garden. There are many flowers and birds in the garden. Anna wants to pick some flowers for Mommy. Ben wants to pick some flowers too.\n\n\"Come on,"
+      },
+      {
+        "prompt": "Sarah wanted to share her new crayons with her friend, but she was nervous. She walked up to her friend during recess. When she reached her friend",
+        "completion": "'s house, she saw that her friend's mom was working in her garden. Sarah thought to herself, \"I wish I could new crayons in my neighbor's garden.\" \n\nDays went by and Sarah's friend still delayed going to school. One day, Sarah's house caught on fire! She had never seen so close before. She didn't know what to do, so she decided to tell everyone in the neighborhood about the burning house and how she was nervous about following her neighbor"
+      },
+      {
+        "prompt": "The old tree in the garden had a secret. Only the little girl knew about it. One day, she brought her brother to see. When they reached the tree",
+        "completion": ", the little girl said, \"Let's study the lock and see what's inside!\"\n\nThe old tree nodded its branches and made a loud click. Inside there were lots of sparkly, colorful stones. The little girl was so excited, she picked them up and put them in her pocket. \n\nThe old tree helped make it a special home. Every day they looked inside it, dreaming of where they would go. Then, one day, something magical happened. The old tree"
+      },
+      {
+        "prompt": "The new boy at school sat alone during lunch. Tom saw him and walked over with his tray. When Tom reached the table",
+        "completion": ", he saw this. The boy smiled and thanked Tom. They became friends and played together. From that day on, Tom and the new boy would meet at the harsh birthday party together to share the fun food and enjoy the meal.<|endoftext|>Once upon a time, there was a bunny who lived hopping around the forest. He was looking for something, but he didn't know what it was. Then, he saw something in the distance. It was a pool! But he felt helpless. The pool"
+      },
+      {
+        "prompt": "The lost puppy followed Anna home from school. When Anna's mother saw the puppy at the door",
+        "completion": ", she was very angry. She told Anna that she must replace the puppy's bed at all times.\n\nAnna knew she could not replace the puppy's everyday life that had been lost. But Anna felt very guilty for making the poor puppy such a heavy noise. She took the puppy outside and found their home in the litter. She was so relieved to see the puppy once again and drove it around the neighborhood as she returned home. \n\nFrom that day on, whenever Anna saw a"
+      },
+      {
+        "prompt": "The old fisherman sat on the dock every morning. One day, little Jamie decided to join him. As Jamie sat down beside the old man",
+        "completion": ", he leaned his fishing rod out to send a big clap.\n\nThe old fisherman was surprised, and said, \"You suspect? How come that! All you need is a twig, I know how to make it move. Well done!\"\n\nJamie thanked the old fisherman and pulled the twig back into the old fisherman's boat. He asked, \"What can I do to thank you?\"\n\nThe old fisherman replied, \"By being alert, by admiring the"
+      },
+      {
+        "prompt": "David found a treasure map in his grandfather's attic. He showed it to his sister. They both looked at the strange markings and",
+        "completion": " decided to follow it. \n\nAfter a few streets, they found a village full of gold. The people wore black and white clothes and were surrounded by strange things. \n\nDavid and his sister started to pack up the treasure. Suddenly, it started to rain. They ran back to the village to tell everyone about the treasure they had gathered. Everyone was so excited that they started to talk about their day. \n\nOn their way off, the rain became heavier and their pockets"
+      },
+      {
+        "prompt": "Tommy dropped his ice cream cone on the sidewalk. He started to cry. An older boy walking by stopped and knelt down next to him",
+        "completion": ".\n\n\"What's wrong?\" the older boy asked.\n\n\"My ice cream cone fell. It's mine, can you help me put it back?\" Sammy asked.\n\nThe older boy smiled, took the ice cream off the ground, and gave it up. Then he took off his hat and returned it to his stand.\n\n\"Here you go Sammy, you can have my ice cream back now,\" the bigger boy said.\n\nSammy was happy to have"
+      },
+      {
+        "prompt": "The rocket ship model wouldn't fly no matter what Jake tried. His little brother watched all his failed attempts. After the tenth try",
+        "completion": ", Jake tried and tried again, but still the rocket ship stayed flat.\n\nEventually, Jake's little brother had to give up. Jake was sad. He wanted to sail his ink ship and make it his own. Then, to his surprise, he found a patch of wet cloths. He quickly wrapped them around his brother, admiring his art. How brave! \n\nFinally, the little boy and his brother sailed back home happy and excited to show their parents the utens"
+      },
+      {
+        "prompt": "Bella was afraid of the dark. One night, there was a power outage. Her older brother came into her room with a flashlight. When he pointed the light at Bella",
+        "completion": ", the radio clicked. It was too chilly!\n\nBella took a deep breath and said \"No! I want to keep watching.\" After she repeated the same action, the song started again. This time, the music was sweet and the singing filled the trees and flowers. Bella smiled and started dancing. She sang and twirled while the music played.\n\nBella felt so happy and special. She knew that even bad moments like this, but with a little bit of courage and"
+      }
+    ]
   }
 ]
