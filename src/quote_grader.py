@@ -142,9 +142,11 @@ FORMAT YOUR RESPONSE AS JSON:
     scores_file = "./scores/quote_grader_scores.json"
     try:
         with open(scores_file, "r") as f:
-            all_scores = json.load(f)
+            file_scores = json.load(f)
     except:
-        all_scores = []
+        file_scores = []
+
+    all_scores = []
 
     if completions is None:
         with open("./scores/quote_grader_completions.json", "r") as f:
@@ -191,7 +193,7 @@ FORMAT YOUR RESPONSE AS JSON:
         if args.override:
             f.write(json.dumps(all_scores, indent=2))
         else:
-            f.write(json.dumps(all_scores + file_scores, indent=2))
+            f.write(json.dumps(file_scores + all_scores, indent=2))
 
     return all_scores
 
@@ -267,6 +269,8 @@ def main():
     if args.only_evaluate or do_all:
         completions = model_completions if do_all else None
         scores = evaluate_completions(args, completions)
+        if not scores:
+            return
     if args.only_visualize or do_all:
         scores = scores if do_all else None
         visualize_results(scores)

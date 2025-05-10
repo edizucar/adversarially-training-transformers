@@ -43,7 +43,7 @@ def generate_and_plot(model, prompt_tokens, args, device, ctx, probe_cluster, en
             print(f"{token}", end="")
 
     if args.probe_plot:
-        plot_probe_heatmap(prompt_text, tokens, probe_scores, save_path=f'probe_plot_{suffix}.png')
+        plot_probe_heatmap(prompt_text, tokens, probe_scores, save_path=f'scores/probe_plot_{suffix}.png')
 
     return decode_tokens(generated_tokens, encoder)
 
