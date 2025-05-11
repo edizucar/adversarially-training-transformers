@@ -13,4 +13,3 @@ __pycache__/
 wandb/
 
 checkpoints/
-scores/
