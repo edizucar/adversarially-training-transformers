@@ -60,6 +60,32 @@ If you also want to run the probes, use the `--run_probes` flag.
 python inference.py [--checkpoint <path_to_checkpoint> | --huggingface <huggingface_model_id>] --run_probes [--probe_checkpoint <path_to_probe_checkpoint>] [--probe_stride <stride>] [--probe_plot]
 ```
 
+## Testing
+
+### Testing Model
+
+If you want to test the models for coherence and ability to use quotes, run the following command:
+
+```bash
+cd src
+python quote_grader.py [--model <path_to_model>] [--all_models] [--only_generate] [--only_evaluate] [--only_visualize] [--facet_plot] [--num_prompts <num_prompts>] [--override]
+```
+
+To get a baseline using the original model, run the following command:
+
+```bash
+python quote_grader.py --get_baseline
+```
+
+### Testing Probes
+
+If you want to test the probes, run the following command:
+
+```bash
+cd src
+python test_probes.py [--probe_checkpoint <path_to_probe_checkpoint>] [--all_probes] [--probe_plot] [--model_checkpoint <path_to_model_checkpoint>] [--model_huggingface <huggingface_model_id>] [--test_clean_and_adversarial]
+```
+
 ## Monitoring
 
 If you want to monitor the GPU utilization, run the following command in a separate terminal (e.g. a new tmux pane):

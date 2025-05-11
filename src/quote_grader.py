@@ -132,18 +132,26 @@ def get_baseline():
     
     scores = trio.run(process_all_completions)
     
-    with open("./scores/quote_grader_completions.json", "r+") as f:
-        data = json.load(f)
-        data.extend(completions)
-        f.seek(0)
-        json.dump(data, f, indent=2)
-        f.truncate()
-    with open("./scores/quote_grader_scores.json", "r+") as f:
-        data = json.load(f)
-        data.extend(scores)
-        f.seek(0)
-        json.dump(data, f, indent=2)
-        f.truncate()
+    if not os.path.exists("./scores/quote_grader_completions.json"):
+        with open("./scores/quote_grader_completions.json", "w") as f:
+            json.dump(completions, f, indent=2)
+    else:
+        with open("./scores/quote_grader_completions.json", "r+") as f:
+            data = json.load(f)
+            data.extend(completions)
+            f.seek(0)
+            json.dump(data, f, indent=2)
+            f.truncate()
+    if not os.path.exists("./scores/quote_grader_scores.json"):
+        with open("./scores/quote_grader_scores.json", "w") as f:
+            json.dump(scores, f, indent=2)
+    else:
+        with open("./scores/quote_grader_scores.json", "r+") as f:
+            data = json.load(f)
+            data.extend(scores)
+            f.seek(0)
+            json.dump(data, f, indent=2)
+            f.truncate()
 
 def generate_completions(args, device, ctx):
     completion_file = "./scores/quote_grader_completions.json"

@@ -49,7 +49,7 @@ def main():
         probe_path = args.probe_checkpoint if args.probe_checkpoint else args.checkpoint
         
     if args.run_probes and probe_path:
-        probe_cluster = load_probes_from_checkpoint(probe_path, device, ProbeCluster)
+        probe_cluster, _, _ = load_probes_from_checkpoint(probe_path, device, ProbeCluster)
         if probe_cluster:
             probe_cluster.set_eval_mode()
             print(f"Loaded {probe_cluster.get_num_probes()} probes from {probe_path}")

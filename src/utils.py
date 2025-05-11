@@ -522,14 +522,14 @@ def load_probes_from_checkpoint(checkpoint_path, device, ProbeCluster=None):
             device=device
         )
         probe_cluster.load_state_dicts(checkpoint['probe_state']['probe_state_dicts'])
-        return probe_cluster
+        return probe_cluster, checkpoint['config'], checkpoint.get('iter_num', 0)
     
     # Try older format compatibility
     elif any(key.startswith('probe_') for key in checkpoint.keys()):
         # Old format from ProbeIntervention
         try:
             from old_files.ProbeIntervention import ProbeCluster as OldProbeCluster
-            return OldProbeCluster.load_from_checkpoint(checkpoint, lr=1e-3, device=device)
+            return OldProbeCluster.load_from_checkpoint(checkpoint, lr=1e-3, device=device), checkpoint['config'], checkpoint.get('iter_num', 0)
         except (ImportError, KeyError) as e:
             print(f"Failed to load probes: {e}")
             return None
