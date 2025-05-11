@@ -16,10 +16,12 @@ from utils import load_model_from_checkpoint
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_names', nargs='+', default=['latest.pt'])
+    parser.add_argument('--model', default='latest.pt')
+    parser.add_argument('--all_models', action='store_true')
     parser.add_argument('--only_generate', action='store_true')
     parser.add_argument('--only_evaluate', action='store_true')
     parser.add_argument('--only_visualize', action='store_true')
+    parser.add_argument('--individual_plots', action='store_true')
     parser.add_argument('--num_prompts', type=int, default=None)
     parser.add_argument('--override', action='store_true')
     parser.add_argument('--seed', type=int, default=None)
@@ -40,7 +42,12 @@ def generate_completions(args, device, ctx):
         prompts = json.load(f)
     prompts = prompts[:args.num_prompts] if args.num_prompts is not None else prompts
 
-    for model_name in args.model_names:
+    if args.all_models:
+        model_names = [f for f in os.listdir("../checkpoints/tiny_stories_adv") if f.endswith(".pt") and f != "latest.pt"]
+    else:
+        model_names = [args.model]
+
+    for model_name in model_names:
         print(f"Generating completions for {model_name}")
         
         checkpoint_path = os.path.join("../checkpoints/tiny_stories_adv", model_name)
@@ -104,7 +111,7 @@ When grading quotation marks, consider the following:
 - Opening and closing quotes match
 - Quotes are used when needed
 - Proper placement with punctuation
-- If there are no quotes and the text doesn't need them, return None
+- If there are no quotes and the text doesn't need them, return "None"
 
 For reference, here are some examples:
 
@@ -124,7 +131,7 @@ comes from listening more to the world" around you than you speak to it.
 === Coherence: 3, Quotation: 4 ===
 Beside the water, a curious young fox approachedand a rabbit.t. THew fox jfjumped over the rabt.".
 
-=== Coherence: 3, Quotation: None ===
+=== Coherence: 3, Quotation: "None" ===
 Beside the water, a curious young fox approachedand a rabbit.t. THew fox jfjumped over the rabt.
 
 The prompt used to generate the text was:
@@ -133,7 +140,7 @@ The prompt used to generate the text was:
 Please evaluate this text:
 {text}
 
-Provide a brief explanation for your score (1-2 sentences) and identify any specific issues.
+Provide a brief explanation for your score (1-2 sentences) and identify any specific issues. Don't use a quote mark in your explanation, because that might break the JSON format.
     
 FORMAT YOUR RESPONSE AS JSON:
 {{
@@ -207,143 +214,146 @@ FORMAT YOUR RESPONSE AS JSON:
 
     return all_scores
 
-def visualize_results():
+def visualize_results(individual_plots=False):
     setup_matplotlib()
     
+    # Load data
     with open("./scores/quote_grader_scores.json", "r") as f:
         scores = json.load(f)
-
-    # Group data by model
-    model_data = defaultdict(lambda: {'quotation': [], 'coherence': [], 'none_count': 0, 'total': 0})
     
-    # Extract unique hyperparameter values
-    lambda_values = sorted(set(entry["lambda_adversarial"] for entry in scores))
-    phi_values = sorted(set(entry["probe_steps_per_model_update"] for entry in scores))
-    iter_values = sorted(set(entry["num_iters"] for entry in scores))
+    # Extract unique values and organize data
+    models = sorted(set(s["checkpoint"] for s in scores))
+    lambda_vals = sorted(set(s["lambda_adversarial"] for s in scores))
+    phi_vals = sorted(set(s["probe_steps_per_model_update"] for s in scores))
+    iter_vals = sorted(set(s["num_iters"] for s in scores))
     
-    for entry in scores:
-        model = entry["checkpoint"]
-        lambda_adversarial = entry["lambda_adversarial"]
-        probe_steps_per_model_update = entry["probe_steps_per_model_update"]
-        num_iters = entry["num_iters"]
-        quot = entry.get("quotation_score")
-        coher = entry.get("coherence_score")
-        
-        model_data[model]['total'] += 1
-        model_data[model]['lambda_adversarial'] = lambda_adversarial
-        model_data[model]['probe_steps_per_model_update'] = probe_steps_per_model_update
-        model_data[model]['num_iters'] = num_iters
-        if quot == "None":
-            model_data[model]['none_count'] += 1
-        elif quot is not None:
-            model_data[model]['quotation'].append(float(quot))
-        if coher is not None:
-            model_data[model]['coherence'].append(float(coher))
-
-    models = sorted(model_data.keys())
-    
-    # Original plots...
-    plt.figure(figsize=(10, 6))
-    plt.boxplot([model_data[m]['quotation'] for m in models])
-    plt.xticks(range(1, len(models) + 1), models)
-    plt.title('Quotation Scores by Model')
-    plt.ylabel('Score')
-    plt.ylim(0, 10.5)
-    plt.tight_layout()
-    plt.savefig('./scores/model_quote_scores.png')
-    
-    # Coherence scores
-    plt.figure(figsize=(10, 6))
-    plt.boxplot([model_data[m]['coherence'] for m in models])
-    plt.xticks(range(1, len(models) + 1), models)
-    plt.title('Coherence Scores by Model')
-    plt.ylabel('Score')
-    plt.ylim(0, 10.5)
-    plt.tight_layout()
-    plt.savefig('./scores/model_coherence_scores.png')
-    
-    # None percentage
-    plt.figure(figsize=(10, 6))
-    none_pcts = [model_data[m]['none_count'] / model_data[m]['total'] * 100 for m in models]
-    plt.bar(range(len(models)), none_pcts)
-    plt.xticks(range(len(models)), models, rotation=45)
-    plt.title('Percentage of "None" Quotation Scores')
-    plt.ylabel('Percentage')
-    plt.ylim(0, 100)
-    plt.tight_layout()
-    plt.savefig('./scores/model_none_percentages.png')
-    
-    # New facet grid visualization for hyperparameters
     # Group data by hyperparameter combinations
-    hyperparam_data = {}
-    for entry in scores:
-        model = entry["checkpoint"]
-        lambda_val = entry["lambda_adversarial"]
-        phi_val = entry["probe_steps_per_model_update"]
-        iter_val = entry["num_iters"]
-        quot = entry.get("quotation_score")
+    data = {}
+    for s in scores:
+        key = (s["checkpoint"], s["lambda_adversarial"], s["probe_steps_per_model_update"], s["num_iters"])
+        if key not in data:
+            data[key] = {'quotation': [], 'coherence': [], 'none_count': 0, 'total': 0}
         
-        key = (model, lambda_val, phi_val, iter_val)
-        if key not in hyperparam_data:
-            hyperparam_data[key] = []
-            
-        if quot not in (None, "None") and isinstance(quot, (int, float, str)):
-            hyperparam_data[key].append(float(quot))
+        data[key]['total'] += 1
+        quot, coher = s.get("quotation_score"), s.get("coherence_score")
+        
+        if quot == "None": data[key]['none_count'] += 1
+        elif quot is not None: data[key]['quotation'].append(float(quot))
+        if coher is not None: data[key]['coherence'].append(float(coher))
     
-    # Create facet grid - using lambda and phi as grid dimensions, models as columns
-    fig, axes = plt.subplots(len(lambda_values), len(phi_values), 
-                            figsize=(6*len(phi_values), 4*len(lambda_values)), 
-                            sharex=True, sharey=True)
+    # Plot metrics
+    metrics = {'quotation': 'Quotation Scores', 'coherence': 'Coherence Scores', 'none_percent': 'None Percentage'}
     
-    for i, lambda_val in enumerate(lambda_values):
-        for j, phi_val in enumerate(phi_values):
-            if len(lambda_values) == 1 and len(phi_values) == 1:
-                ax = axes
-            elif len(lambda_values) == 1 or len(phi_values) == 1:
-                ax = axes[j]
-            else:
-                ax = axes[i, j]
+    if not individual_plots:
+        for metric, title in metrics.items():
+            create_facet_grid(models, lambda_vals, phi_vals, iter_vals, data, metric, title)
+    else:
+        for l in lambda_vals:
+            for p in phi_vals:
+                for i in iter_vals:
+                    if not any(data[key] for key in data if key[1] == l and key[2] == p and key[3] == i):
+                        continue
+                    create_combo_plot(models, l, p, i, data, metrics)
+    print("Saved all plots")
+
+def create_facet_grid(models, lambda_vals, phi_vals, iter_vals, data, metric, title):
+    is_percent = metric == 'none_percent'
+    fig, axes = plt.subplots(len(lambda_vals), len(phi_vals), figsize=(6*len(phi_vals), 4*len(lambda_vals)))
+    if not isinstance(axes, np.ndarray): axes = np.array([[axes]])
+    if axes.ndim == 1: axes = axes.reshape(1, -1) if len(lambda_vals) == 1 else axes.reshape(-1, 1)
+    
+    colors = plt.cm.viridis(np.linspace(0, 1, len(iter_vals)))
+    
+    for i, l in enumerate(lambda_vals):
+        for j, p in enumerate(phi_vals):
+            ax = axes[i, j]
+            positions, plot_data, labels = [], [], []
+            pos = 1
             
             # Collect data for this cell
-            positions = []
-            data_to_plot = []
-            labels = []
-            colors = plt.cm.viridis(np.linspace(0, 1, len(iter_values)))
-            
-            current_pos = 1
             for model in models:
-                for iter_idx, iter_val in enumerate(iter_values):
-                    key = (model, lambda_val, phi_val, iter_val)
-                    if key in hyperparam_data and hyperparam_data[key]:
-                        data_to_plot.append(hyperparam_data[key])
-                        positions.append(current_pos)
-                        labels.append(f"{model}\nn={iter_val}")
-                    current_pos += 1
-                current_pos += 1  # Add gap between models
+                for it in iter_vals:
+                    key = (model, l, p, it)
+                    if key in data:
+                        d = data[key]
+                        if is_percent and d['total'] > 0:
+                            plot_data.append([d['none_count'] / d['total'] * 100])
+                            labels.append(f"iters={it}")
+                            positions.append(pos)
+                        elif not is_percent and d[metric]:
+                            plot_data.append(d[metric])
+                            labels.append(f"iters={it}")
+                            positions.append(pos)
+                    pos += 1
+                pos += 1
             
-            if data_to_plot:
-                bplot = ax.boxplot(data_to_plot, positions=positions, patch_artist=True)
-                for patch, color in zip(bplot['boxes'], colors):
-                    patch.set_facecolor(color)
-                    patch.set_alpha(0.6)
-                legend_elements = [plt.Rectangle((0,0),1,1, facecolor=color, alpha=0.6) for color in colors]
-                ax.legend(legend_elements, [f'n={n}' for n in iter_values], loc='upper right', title='Iterations')
-            else:
+            # Plot data
+            if not plot_data:
                 ax.text(0.5, 0.5, 'No data', ha='center', transform=ax.transAxes)
-                
-            if j == 0:
-                ax.set_ylabel(f'lambda={lambda_val}')
-            if i == len(lambda_values)-1:
-                ax.set_xlabel(f'phi={phi_val}')
-            ax.set_xticks(positions)
-            ax.set_xticklabels(labels, rotation=45, ha='right')
-            ax.set_ylim(0, 10.5)
-                
-    plt.suptitle('Quotation Scores by Hyperparameters and Model')
-    plt.tight_layout()
-    plt.savefig('./scores/hyperparam_facet_grid.png')
+            elif is_percent:
+                ax.bar(positions, [d[0] for d in plot_data], color=colors)
+                ax.set_ylim(0, 100)
+            else:
+                bplot = ax.boxplot(plot_data, positions=positions, patch_artist=True)
+                for box, color in zip(bplot['boxes'], colors[:len(bplot['boxes'])]):
+                    box.set_facecolor(color)
+                    box.set_alpha(0.6)
+                ax.set_ylim(0, 10.5)
+            
+            # Add labels and legend
+            if positions:
+                ax.set_xticks(positions)
+                ax.set_xticklabels(labels)
+                legend_elements = [plt.Rectangle((0,0),1,1, facecolor=c, alpha=0.6) for c in colors[:len(iter_vals)]]
+                ax.legend(legend_elements, [f'n={n}' for n in iter_vals], loc='upper right', title='Iterations')
+            else:
+                ax.set_xticks([])
+                ax.set_xticklabels([])
+
+            if j == 0: ax.set_ylabel(f'lambda={l}')
+            if i == len(lambda_vals)-1: ax.set_xlabel(f'phi={p}')
     
-    print("Plots saved to ./scores/")
+    plt.suptitle(f"{title} by Hyperparameters and Model")
+    plt.tight_layout()
+    plt.savefig(f"./scores/{metric}_facet_grid.png")
+
+def create_combo_plot(models, l, p, i, data, metrics):
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    
+    for idx, (metric, title) in enumerate(metrics.items()):
+        ax = axes[idx]
+        is_percent = metric == 'none_percent'
+        
+        # Collect data
+        values = []
+        for model in models:
+            key = (model, l, p, i)
+            if key in data:
+                d = data[key]
+                if is_percent:
+                    values.append(d['none_count'] / max(1, d['total']) * 100)
+                else:
+                    values.append(d[metric])
+            else:
+                values.append([] if not is_percent else 0)
+        
+        # Plot data
+        ax.set_title(title)
+        if is_percent:
+            ax.bar(range(len(values)), values)
+            ax.set_ylim(0, 100)
+        elif any(values):
+            ax.boxplot(values)
+            ax.set_ylim(0, 10.5)
+        else:
+            ax.text(0.5, 0.5, 'No data', ha='center', transform=ax.transAxes)
+        
+        ax.set_xticks(range(1, len(models) + 1))
+        ax.set_xticklabels(models)
+    
+    plt.suptitle(f'Results for lambda={l}, phi={p}, iterations={i}')
+    plt.tight_layout()
+    plt.savefig(f'./scores/combo_l{l}_p{p}_i{i}.png')
 
 def main():
     args = parse_args()
@@ -361,7 +371,7 @@ def main():
         completions = model_completions if do_all else None
         scores = evaluate_completions(args, completions)
     if args.only_visualize or do_all:
-        visualize_results()
+        visualize_results(args.individual_plots)
 
 if __name__ == "__main__":
     main()
