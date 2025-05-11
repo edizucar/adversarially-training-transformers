@@ -49,8 +49,8 @@ train_model: true
 # Probe config
 probe_type: 'linear'
 probe_learning_rate: 1e-3
-lambda_adversarial: 0.05
-phi_probe_steps_per_model_update: 5
+lambda_adversarial: 0.1
+phi_probe_steps_per_model_update: 1
 train_adversarially: true
 
 # Initialization

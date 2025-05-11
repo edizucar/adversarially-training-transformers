@@ -159,6 +159,9 @@ FORMAT YOUR RESPONSE AS JSON:
     for completion_obj in tqdm(completions, desc="Evaluating completions", total=len(completions)):
         checkpoint = completion_obj["checkpoint"]
         prompt = completion_obj["prompt"]
+        lambda_adversarial = completion_obj["lambda_adversarial"]
+        probe_steps_per_model_update = completion_obj["probe_steps_per_model_update"]
+        num_iters = completion_obj["num_iters"]
         prompt_id = completion_obj["prompt_id"]
         completion = completion_obj["completion"]
         
@@ -183,13 +186,13 @@ FORMAT YOUR RESPONSE AS JSON:
                 scores = json.loads(json_str)
             except json.JSONDecodeError:
                 print(f"Error parsing API response for {checkpoint}: {response}")
-                return None
+                continue
 
         all_scores.append({
             "checkpoint": checkpoint,
             "lambda_adversarial": lambda_adversarial,
             "probe_steps_per_model_update": probe_steps_per_model_update,
-            "num_iters": iter_num,
+            "num_iters": num_iters,
             "prompt": prompt,
             "prompt_id": prompt_id,
             "completion": completion,
@@ -204,15 +207,20 @@ FORMAT YOUR RESPONSE AS JSON:
 
     return all_scores
 
-def visualize_results(scores):
+def visualize_results():
     setup_matplotlib()
     
-    if scores is None:
-        with open("./scores/quote_grader_scores.json", "r") as f:
-            scores = json.load(f)
+    with open("./scores/quote_grader_scores.json", "r") as f:
+        scores = json.load(f)
 
     # Group data by model
     model_data = defaultdict(lambda: {'quotation': [], 'coherence': [], 'none_count': 0, 'total': 0})
+    
+    # Extract unique hyperparameter values
+    lambda_values = sorted(set(entry["lambda_adversarial"] for entry in scores))
+    phi_values = sorted(set(entry["probe_steps_per_model_update"] for entry in scores))
+    iter_values = sorted(set(entry["num_iters"] for entry in scores))
+    
     for entry in scores:
         model = entry["checkpoint"]
         lambda_adversarial = entry["lambda_adversarial"]
@@ -234,7 +242,7 @@ def visualize_results(scores):
 
     models = sorted(model_data.keys())
     
-    # Quotation scores
+    # Original plots...
     plt.figure(figsize=(10, 6))
     plt.boxplot([model_data[m]['quotation'] for m in models])
     plt.xticks(range(1, len(models) + 1), models)
@@ -264,7 +272,77 @@ def visualize_results(scores):
     plt.ylim(0, 100)
     plt.tight_layout()
     plt.savefig('./scores/model_none_percentages.png')
-
+    
+    # New facet grid visualization for hyperparameters
+    # Group data by hyperparameter combinations
+    hyperparam_data = {}
+    for entry in scores:
+        model = entry["checkpoint"]
+        lambda_val = entry["lambda_adversarial"]
+        phi_val = entry["probe_steps_per_model_update"]
+        iter_val = entry["num_iters"]
+        quot = entry.get("quotation_score")
+        
+        key = (model, lambda_val, phi_val, iter_val)
+        if key not in hyperparam_data:
+            hyperparam_data[key] = []
+            
+        if quot not in (None, "None") and isinstance(quot, (int, float, str)):
+            hyperparam_data[key].append(float(quot))
+    
+    # Create facet grid - using lambda and phi as grid dimensions, models as columns
+    fig, axes = plt.subplots(len(lambda_values), len(phi_values), 
+                            figsize=(6*len(phi_values), 4*len(lambda_values)), 
+                            sharex=True, sharey=True)
+    
+    for i, lambda_val in enumerate(lambda_values):
+        for j, phi_val in enumerate(phi_values):
+            if len(lambda_values) == 1 and len(phi_values) == 1:
+                ax = axes
+            elif len(lambda_values) == 1 or len(phi_values) == 1:
+                ax = axes[j]
+            else:
+                ax = axes[i, j]
+            
+            # Collect data for this cell
+            positions = []
+            data_to_plot = []
+            labels = []
+            colors = plt.cm.viridis(np.linspace(0, 1, len(iter_values)))
+            
+            current_pos = 1
+            for model in models:
+                for iter_idx, iter_val in enumerate(iter_values):
+                    key = (model, lambda_val, phi_val, iter_val)
+                    if key in hyperparam_data and hyperparam_data[key]:
+                        data_to_plot.append(hyperparam_data[key])
+                        positions.append(current_pos)
+                        labels.append(f"{model}\nn={iter_val}")
+                    current_pos += 1
+                current_pos += 1  # Add gap between models
+            
+            if data_to_plot:
+                bplot = ax.boxplot(data_to_plot, positions=positions, patch_artist=True)
+                for patch, color in zip(bplot['boxes'], colors):
+                    patch.set_facecolor(color)
+                    patch.set_alpha(0.6)
+                legend_elements = [plt.Rectangle((0,0),1,1, facecolor=color, alpha=0.6) for color in colors]
+                ax.legend(legend_elements, [f'n={n}' for n in iter_values], loc='upper right', title='Iterations')
+            else:
+                ax.text(0.5, 0.5, 'No data', ha='center', transform=ax.transAxes)
+                
+            if j == 0:
+                ax.set_ylabel(f'lambda={lambda_val}')
+            if i == len(lambda_values)-1:
+                ax.set_xlabel(f'phi={phi_val}')
+            ax.set_xticks(positions)
+            ax.set_xticklabels(labels, rotation=45, ha='right')
+            ax.set_ylim(0, 10.5)
+                
+    plt.suptitle('Quotation Scores by Hyperparameters and Model')
+    plt.tight_layout()
+    plt.savefig('./scores/hyperparam_facet_grid.png')
+    
     print("Plots saved to ./scores/")
 
 def main():
@@ -282,11 +360,8 @@ def main():
     if args.only_evaluate or do_all:
         completions = model_completions if do_all else None
         scores = evaluate_completions(args, completions)
-        if not scores:
-            return
     if args.only_visualize or do_all:
-        scores = scores if do_all else None
-        visualize_results(scores)
+        visualize_results()
 
 if __name__ == "__main__":
     main()
