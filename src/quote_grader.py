@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import trio
 import torch
 import argparse
 import anthropic
@@ -12,7 +13,7 @@ from contextlib import nullcontext
 
 from model import GPTConfig, GPT
 from inference_utils import setup_pytorch, setup_matplotlib, encode_prompt, generate, decode_tokens
-from utils import load_model_from_checkpoint
+from utils import load_model_from_checkpoint, load_model_from_huggingface
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -90,11 +91,57 @@ def generate_completions(args, device, ctx):
 
     return model_completions
 
-def evaluate_completions(args, completions):
+async def evaluate_single_completion(grading_instructions, completion_obj):
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise ValueError("ANTHROPIC_API_KEY environment variable not set")
     client = anthropic.Anthropic()
+    
+    checkpoint = completion_obj["checkpoint"]
+    prompt = completion_obj["prompt"]
+    lambda_adversarial = completion_obj["lambda_adversarial"]
+    probe_steps_per_model_update = completion_obj["probe_steps_per_model_update"]
+    num_iters = completion_obj["num_iters"]
+    prompt_id = completion_obj["prompt_id"]
+    completion = completion_obj["completion"]
+    
+    response = await trio.to_thread.run_sync(
+        lambda: client.messages.create(
+            model="claude-3-5-sonnet-latest",
+            max_tokens=1024,
+            messages=[{
+                "role": "user", 
+                "content": grading_instructions.format(prompt=prompt, text=completion)
+            }]
+        )
+    )
+    
+    response_text = response.content[0].text
+    
+    if "```json" in response_text:
+        json_str = response_text.split("```json")[1].split("```")[0].strip()
+    elif "```" in response_text:
+        json_str = response_text.split("```")[1].strip()
+    else:
+        json_str = response_text.strip()
+    
+    try:
+        scores = json.loads(json_str)
+    except json.JSONDecodeError:
+        print(f"Error parsing API response for {checkpoint}: {response}")
+        scores = {}
+    
+    return {
+        "checkpoint": checkpoint,
+        "lambda_adversarial": lambda_adversarial,
+        "probe_steps_per_model_update": probe_steps_per_model_update,
+        "num_iters": num_iters,
+        "prompt": prompt,
+        "prompt_id": prompt_id,
+        "completion": completion,
+        **scores
+    }
 
+def evaluate_completions(args, completions):
     grading_instructions = """As part of an AI safety project, I want to evaluate multiple model checkpoints and determine whether or not they can generate coherent text and use quotes properly.
 Please evaluate the following text on its coherence and use of quotation marks. Grade each on a scale from 1-10, where:
 1: Complete failure
@@ -149,62 +196,34 @@ FORMAT YOUR RESPONSE AS JSON:
     "explanation": "<brief explanation>"
 }}
 """
-
     scores_file = "./scores/quote_grader_scores.json"
     try:
         with open(scores_file, "r") as f:
             file_scores = json.load(f)
     except:
         file_scores = []
-
-    all_scores = []
-
     if completions is None:
         with open("./scores/quote_grader_completions.json", "r") as f:
             completions = json.load(f)
-
-    for completion_obj in tqdm(completions, desc="Evaluating completions", total=len(completions)):
-        checkpoint = completion_obj["checkpoint"]
-        prompt = completion_obj["prompt"]
-        lambda_adversarial = completion_obj["lambda_adversarial"]
-        probe_steps_per_model_update = completion_obj["probe_steps_per_model_update"]
-        num_iters = completion_obj["num_iters"]
-        prompt_id = completion_obj["prompt_id"]
-        completion = completion_obj["completion"]
+    
+    async def process_all_completions():
+        all_scores = []
+        sem = trio.Semaphore(5)
+        progress_bar = tqdm(total=len(completions), desc="Evaluating completions")
         
-        scores = {}
-        for eval_type in ["quotation", "coherence"]:                
-            response = client.messages.create(
-                model="claude-3-5-sonnet-latest",
-                max_tokens=1024,
-                messages=[{
-                    "role": "user", 
-                    "content": grading_instructions.format(prompt=prompt, text=completion)
-                }]
-            )
-            response_text = response.content[0].text
-            if "```json" in response_text:
-                json_str = response_text.split("```json")[1].split("```")[0].strip()
-            elif "```" in response_text:
-                json_str = response_text.split("```")[1].strip()
-            else:
-                json_str = response_text.strip()
-            try:
-                scores = json.loads(json_str)
-            except json.JSONDecodeError:
-                print(f"Error parsing API response for {checkpoint}: {response}")
-                continue
-
-        all_scores.append({
-            "checkpoint": checkpoint,
-            "lambda_adversarial": lambda_adversarial,
-            "probe_steps_per_model_update": probe_steps_per_model_update,
-            "num_iters": num_iters,
-            "prompt": prompt,
-            "prompt_id": prompt_id,
-            "completion": completion,
-            **scores
-        })
+        async def process_one(completion_obj):
+            async with sem:
+                result = await evaluate_single_completion(grading_instructions, completion_obj)
+                all_scores.append(result)
+                progress_bar.update(1)
+        
+        async with trio.open_nursery() as nursery:
+            for completion_obj in completions:
+                nursery.start_soon(process_one, completion_obj)
+        
+        return all_scores
+    
+    all_scores = trio.run(process_all_completions)
 
     with open(scores_file, "w") as f:
         if args.override:
@@ -318,7 +337,7 @@ def create_facet_grid(models, lambda_vals, phi_vals, iter_vals, data, metric, ti
     plt.savefig(f"./scores/{metric}_facet_grid.png")
 
 def create_combo_plot(models, l, p, i, data, metrics):
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    fig, axes = plt.subplots(1, 3, figsize=(12, 6))
     
     for idx, (metric, title) in enumerate(metrics.items()):
         ax = axes[idx]
@@ -326,21 +345,23 @@ def create_combo_plot(models, l, p, i, data, metrics):
         
         # Collect data
         values = []
+        models_plotted = []
         for model in models:
             key = (model, l, p, i)
             if key in data:
+                models_plotted.append(model)
                 d = data[key]
                 if is_percent:
                     values.append(d['none_count'] / max(1, d['total']) * 100)
                 else:
                     values.append(d[metric])
             else:
-                values.append([] if not is_percent else 0)
+                continue
         
         # Plot data
         ax.set_title(title)
         if is_percent:
-            ax.bar(range(len(values)), values)
+            ax.bar(range(1, len(values) + 1), values)
             ax.set_ylim(0, 100)
         elif any(values):
             ax.boxplot(values)
@@ -348,12 +369,12 @@ def create_combo_plot(models, l, p, i, data, metrics):
         else:
             ax.text(0.5, 0.5, 'No data', ha='center', transform=ax.transAxes)
         
-        ax.set_xticks(range(1, len(models) + 1))
-        ax.set_xticklabels(models)
+        ax.set_xticks(range(1, len(models_plotted) + 1))
+        ax.set_xticklabels(models_plotted, rotation=45, ha='right')
     
     plt.suptitle(f'Results for lambda={l}, phi={p}, iterations={i}')
     plt.tight_layout()
-    plt.savefig(f'./scores/combo_l{l}_p{p}_i{i}.png')
+    plt.savefig(f'./scores/model_l{l}_p{p}_i{i}.png')
 
 def main():
     args = parse_args()
