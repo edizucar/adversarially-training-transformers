@@ -65,10 +65,10 @@ def main():
     
     # Load model from checkpoint and/or huggingface
     if args.model_checkpoint:
-        checkpoint_model, model_args, encoder, _, _ = load_model_from_checkpoint(
+        checkpoint_model, model_args, _, encoder, _, _ = load_model_from_checkpoint(
             args.model_checkpoint, device, GPT, GPTConfig, return_tokenizer=True)
     else:
-        checkpoint_model, model_args, encoder, _, _ = load_model_from_checkpoint(
+        checkpoint_model, model_args, _, encoder, _, _ = load_model_from_checkpoint(
             args.probe_checkpoint, device, GPT, GPTConfig, return_tokenizer=True)
         
     if args.test_clean_and_adversarial or not checkpoint_model:

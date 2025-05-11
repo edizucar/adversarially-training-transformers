@@ -72,7 +72,7 @@ def main():
     if config.init_from == 'huggingface':
         model, model_args = utils.load_model_from_huggingface(config.huggingface_model_id, device, GPT, GPTConfig)
     elif config.init_from == 'resume' and checkpoint is not None:
-        model, model_args, iter_num, best_val_loss = utils.load_model_from_checkpoint(checkpoint, device, GPT, GPTConfig)
+        model, model_args, _, iter_num, best_val_loss = utils.load_model_from_checkpoint(checkpoint, device, GPT, GPTConfig)
     elif config.init_from == 'resume' and checkpoint is None:
         raise ValueError(f"Checkpoint not found for resume")
     else:

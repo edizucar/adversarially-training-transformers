@@ -400,6 +400,8 @@ def load_model_from_checkpoint(checkpoint, device, GPT, GPTConfig, train_adversa
     if isinstance(checkpoint, str):
         print(f"Loading model from checkpoint...")
         checkpoint = torch.load(checkpoint, map_location=device)
+    else:
+        raise ValueError("Checkpoint is not a string")
 
     model_args = checkpoint['model_args']
     gptconf = GPTConfig(**model_args)
@@ -407,6 +409,7 @@ def load_model_from_checkpoint(checkpoint, device, GPT, GPTConfig, train_adversa
     
     # Load model state
     state_dict = checkpoint['model']
+    config = checkpoint['config']
     
     # Fix key prefixes if needed (for models saved with DDP)
     unwanted_prefix = '_orig_mod.'
@@ -437,9 +440,9 @@ def load_model_from_checkpoint(checkpoint, device, GPT, GPTConfig, train_adversa
     
     # If no encoder available, return None for encoder
     if return_tokenizer:
-        return model, gptconf, encoder, iter_num, best_val_loss
+        return model, gptconf, config, encoder, iter_num, best_val_loss
     else:
-        return model, gptconf, iter_num, best_val_loss
+        return model, gptconf, config, iter_num, best_val_loss
 
 def load_model_from_huggingface(model_id, device, GPT, GPTConfig, return_tokenizer=False):
     """

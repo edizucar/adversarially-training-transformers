@@ -42,14 +42,15 @@ def generate_completions(args, device, ctx):
 
     for model_name in args.model_names:
         print(f"Generating completions for {model_name}")
-        completion_pairs = []
         
         checkpoint_path = os.path.join("../checkpoints/tiny_stories_adv", model_name)
-        model, _, encoder, _, _ = load_model_from_checkpoint(
+        model, _, config, encoder, iter_num, _ = load_model_from_checkpoint(
             checkpoint_path, 
             device, GPT, GPTConfig, 
             return_tokenizer=True
         )
+        lambda_adversarial = config['lambda_adversarial']
+        probe_steps_per_model_update = config['phi_probe_steps_per_model_update']
 
         for prompt_obj in tqdm(prompts, desc="Generating completions", total=len(prompts)):
             prompt = prompt_obj["text"]
@@ -65,6 +66,9 @@ def generate_completions(args, device, ctx):
             completion = decode_tokens(generated_tokens, encoder)
             model_completions.append({
                 "checkpoint": model_name,
+                "lambda_adversarial": lambda_adversarial,
+                "probe_steps_per_model_update": probe_steps_per_model_update,
+                "num_iters": iter_num,
                 "prompt": prompt,
                 "prompt_id": prompt_obj["id"],
                 "completion": completion
@@ -183,6 +187,9 @@ FORMAT YOUR RESPONSE AS JSON:
 
         all_scores.append({
             "checkpoint": checkpoint,
+            "lambda_adversarial": lambda_adversarial,
+            "probe_steps_per_model_update": probe_steps_per_model_update,
+            "num_iters": iter_num,
             "prompt": prompt,
             "prompt_id": prompt_id,
             "completion": completion,
@@ -208,10 +215,16 @@ def visualize_results(scores):
     model_data = defaultdict(lambda: {'quotation': [], 'coherence': [], 'none_count': 0, 'total': 0})
     for entry in scores:
         model = entry["checkpoint"]
+        lambda_adversarial = entry["lambda_adversarial"]
+        probe_steps_per_model_update = entry["probe_steps_per_model_update"]
+        num_iters = entry["num_iters"]
         quot = entry.get("quotation_score")
         coher = entry.get("coherence_score")
         
         model_data[model]['total'] += 1
+        model_data[model]['lambda_adversarial'] = lambda_adversarial
+        model_data[model]['probe_steps_per_model_update'] = probe_steps_per_model_update
+        model_data[model]['num_iters'] = num_iters
         if quot == "None":
             model_data[model]['none_count'] += 1
         elif quot is not None:

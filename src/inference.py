@@ -45,7 +45,7 @@ def main():
         model, model_args, encoder = load_model_from_huggingface(args.huggingface, device, GPT, GPTConfig, return_tokenizer=True)
         probe_path = args.probe_checkpoint if (args.run_probes and args.probe_checkpoint) else None
     else:
-        model, model_args, encoder, _, _ = load_model_from_checkpoint(args.checkpoint, device, GPT, GPTConfig, return_tokenizer=True)
+        model, model_args, _, encoder, _, _ = load_model_from_checkpoint(args.checkpoint, device, GPT, GPTConfig, return_tokenizer=True)
         probe_path = args.probe_checkpoint if args.probe_checkpoint else args.checkpoint
         
     if args.run_probes and probe_path:
