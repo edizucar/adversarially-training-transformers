@@ -441,7 +441,7 @@ def create_combo_plot(models, l, p, i, data, metrics):
             ax.text(0.5, 0.5, 'No data', ha='center', transform=ax.transAxes)
         
         ax.set_xticks(range(1, len(models_plotted) + 1))
-        ax.set_xticklabels(models_plotted, rotation=45, ha='right')
+        ax.set_xticklabels(models_plotted)
     
     plt.suptitle(f'Results for lambda={l}, phi={p}, iterations={i}')
     plt.tight_layout()
